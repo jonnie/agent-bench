@@ -379,6 +379,143 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("--env", argv)
         self.assertEqual(calls[-1][0][:3], ["docker", "rm", "--force"])
 
+    def test_linux_agent_uses_host_uid_and_private_writable_home(self):
+        calls = []
+        homes = []
+        environment = {"BENCH_API_KEY": "environment-only-secret", "HOME": "/home/bench"}
+        with tempfile.TemporaryDirectory() as temp:
+            config_file = Path(temp) / "models.json"
+            config_file.write_text("{}", encoding="utf-8")
+            mounts = [(config_file, "/home/bench/.pi/agent/models.json", True)]
+
+            def command(argv, *args, **kwargs):
+                calls.append((argv, kwargs))
+                if argv[:2] == ["docker", "run"]:
+                    self.assertEqual(argv[argv.index("--user") + 1], "1001:1002")
+                    self.assertNotIn("environment-only-secret", argv)
+                    self.assertEqual(kwargs["env"]["BENCH_API_KEY"], environment["BENCH_API_KEY"])
+                    specs = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--mount"]
+                    home_spec = next(
+                        spec
+                        for spec in specs
+                        if "target=/home/bench," in spec or spec.endswith("target=/home/bench")
+                    )
+                    self.assertNotIn("readonly", home_spec)
+                    home = Path(home_spec.split("source=", 1)[1].split(",", 1)[0])
+                    homes.append(home)
+                    self.assertNotEqual(home.resolve(), Path.home().resolve())
+                    self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+                    self.assertTrue((home / ".pi/agent/models.json").is_file())
+                    self.assertTrue(
+                        any(
+                            spec.endswith("target=/home/bench/.pi/agent/models.json,readonly")
+                            for spec in specs
+                        )
+                    )
+                    cache = home / ".cache/private"
+                    cache.mkdir(parents=True, mode=0o700)
+                    (cache / "artifact").write_text("cache", encoding="utf-8")
+                elif argv[:3] == ["docker", "rm", "--force"]:
+                    self.assertTrue(homes[0].exists(), "remove container before deleting its home")
+                return CommandResult(0, "{}", "", 0.1)
+
+            with (
+                patch("agent_bench.runner.platform.system", return_value="Linux"),
+                patch("agent_bench.runner.os.getuid", return_value=1001),
+                patch("agent_bench.runner.os.getgid", return_value=1002),
+                patch("agent_bench.runner.run_command", side_effect=command),
+            ):
+                Docker(RunConfig(model="coder")).execute(
+                    image="agent",
+                    mounts=mounts,
+                    command=["pi"],
+                    environment=environment,
+                    timeout=2,
+                )
+            self.assertEqual(mounts, [(config_file, "/home/bench/.pi/agent/models.json", True)])
+            self.assertEqual(
+                environment, {"BENCH_API_KEY": "environment-only-secret", "HOME": "/home/bench"}
+            )
+            self.assertFalse(homes[0].parent.exists())
+            self.assertEqual(calls[-1][0][:3], ["docker", "rm", "--force"])
+
+    def test_root_hosts_and_non_linux_keep_image_nonroot_user(self):
+        for system, uid in (("Linux", 0), ("Darwin", 501)):
+            calls = []
+
+            def command(argv, *args, **kwargs):
+                calls.append(argv)
+                return CommandResult(0, "{}", "", 0.1)
+
+            with (
+                self.subTest(system=system, uid=uid),
+                patch("agent_bench.runner.platform.system", return_value=system),
+                patch("agent_bench.runner.os.getuid", return_value=uid),
+                patch("agent_bench.runner.os.getgid") as gid,
+                patch("agent_bench.runner.run_command", side_effect=command),
+            ):
+                Docker(RunConfig(model="coder")).execute(
+                    image="agent",
+                    mounts=[],
+                    command=["pi"],
+                    timeout=2,
+                )
+                self.assertNotIn("--user", calls[0])
+                self.assertNotIn("--mount", calls[0])
+                gid.assert_not_called()
+
+    def test_linux_grading_keeps_image_user_and_has_no_writable_home(self):
+        calls = []
+
+        def command(argv, *args, **kwargs):
+            calls.append(argv)
+            return CommandResult(0, "{}", "", 0.1)
+
+        with (
+            patch("agent_bench.runner.platform.system", return_value="Linux"),
+            patch("agent_bench.runner.os.getuid", return_value=1001),
+            patch("agent_bench.runner.run_command", side_effect=command),
+        ):
+            Docker(RunConfig(model="coder")).execute(
+                image="grader",
+                mounts=[],
+                command=["python", "-I"],
+                timeout=2,
+                grade=True,
+            )
+        self.assertNotIn("--user", calls[0])
+        self.assertNotIn("--mount", calls[0])
+        self.assertNotIn("--env", calls[0])
+        self.assertIn("--read-only", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--network") + 1], "none")
+
+    def test_linux_private_home_is_removed_after_agent_interrupt(self):
+        homes = []
+
+        def command(argv, *args, **kwargs):
+            if argv[:2] == ["docker", "run"]:
+                specs = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--mount"]
+                home_spec = next(spec for spec in specs if spec.endswith("target=/home/bench"))
+                homes.append(Path(home_spec.split("source=", 1)[1].split(",", 1)[0]))
+                raise KeyboardInterrupt
+            self.assertTrue(homes[0].exists())
+            return CommandResult(0, "", "", 0.1)
+
+        with (
+            patch("agent_bench.runner.platform.system", return_value="Linux"),
+            patch("agent_bench.runner.os.getuid", return_value=1001),
+            patch("agent_bench.runner.os.getgid", return_value=1001),
+            patch("agent_bench.runner.run_command", side_effect=command),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            Docker(RunConfig(model="coder")).execute(
+                image="agent",
+                mounts=[],
+                command=["pi"],
+                timeout=2,
+            )
+        self.assertFalse(homes[0].parent.exists())
+
     def test_cleanup_failure_is_fatal_and_prevents_source_snapshot(self):
         with patch(
             "agent_bench.runner.run_command",

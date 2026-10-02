@@ -4,6 +4,11 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 
 ## Unreleased
 
+### Fixed
+
+- Linux agent containers now match a nonroot caller's UID/GID and use a private temporary writable home, preventing container-created bytecode and `0700` directories from breaking host cleanup. Root-host runs and graders retain the image's nonroot user.
+- Docker regression coverage reproduces UID-mismatched cleanup on a Linux named volume, including bytecode, private directories, and read-only files. Integration summary failures now include diagnostics.
+
 ### Added
 
 - GitHub Actions checks for unit tests on Linux/macOS, linting and type checking, package builds, and isolated wheel/source-distribution installations.

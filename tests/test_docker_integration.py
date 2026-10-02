@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
@@ -49,6 +50,11 @@ TOOL_MARKER = "AGENT_BENCH_MOCK_PATCH_APPLIED"
 # A quoted Python invocation works for all three advertised bash tools.
 BASH_COMMAND = "python -c " + shlex.quote(
     "from pathlib import Path; import subprocess; "
+    "private = Path('/workspace/scratch/private'); "
+    "private.mkdir(mode=0o700, parents=True); private.chmod(0o700); "
+    "readonly = private / 'readonly.txt'; "
+    "readonly.write_text('cleanup must remove private artifacts', encoding='utf-8'); "
+    "readonly.chmod(0o400); "
     f"Path('/workspace/solution/billing.py').write_text({BILLING_SOURCE!r}, encoding='utf-8'); "
     "subprocess.run(['python', '-m', 'unittest', 'discover', '-s', 'tests'], "
     "check=True, timeout=30); "
@@ -225,6 +231,172 @@ class MockModelHandler(BaseHTTPRequestHandler):
     os.environ.get("AGENT_BENCH_DOCKER_TESTS") == "1",
     "Set AGENT_BENCH_DOCKER_TESTS=1 to run prebuilt Docker integration tests",
 )
+class DockerOwnershipIntegrationTests(unittest.TestCase):
+    def test_linux_volume_cleanup_requires_matching_agent_uid(self):
+        # Named volumes use the daemon's Linux filesystem, even on Docker Desktop.
+        # No host bind mounts, harness images, or model endpoint are needed here.
+        docker = runner.Docker(runner.RunConfig(model="unused", build=False))
+        docker.available()
+        identifiers = docker.checked(
+            [
+                "image",
+                "ls",
+                "--no-trunc",
+                "--filter",
+                "reference=" + runner.BASE_IMAGE,
+                "--format",
+                "{{.ID}}",
+            ],
+            timeout=30,
+        ).stdout.splitlines()
+        self.assertEqual(len(identifiers), 1, f"Missing prebuilt base image: {identifiers}")
+        image = docker.image_metadata(identifiers[0])["id"]
+        volume = "agent-bench-ownership-" + uuid.uuid4().hex
+
+        def run_as(uid, script, *arguments):
+            name = volume + "-" + uuid.uuid4().hex[:8]
+            command = [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--name",
+                name,
+                *docker.limits(),
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                f"{uid}:{uid}",
+                "--mount",
+                f"type=volume,source={volume},target=/workspace,volume-nocopy",
+                "--workdir",
+                "/workspace",
+                image,
+                "python",
+                "-c",
+                script,
+                *arguments,
+            ]
+            try:
+                result = runner.run_command(command, timeout=30, max_output=16384)
+                diagnostics = (
+                    f"UID {uid}, arguments {arguments}:\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
+                self.assertFalse(result.timed_out, diagnostics)
+                self.assertFalse(result.output_limited, diagnostics)
+                self.assertEqual(result.returncode, 0, diagnostics)
+                return result.stdout
+            finally:
+                # --rm alone cannot clean up after a timed-out Docker client.
+                docker.remove(name)
+
+        try:
+            docker.checked(["volume", "create", volume], timeout=30)
+            # The only root execution initializes this empty, ephemeral volume.
+            # CAP_DAC_OVERRIDE/CHOWN are not needed: root owns the volume root.
+            run_as(
+                0,
+                """
+import os
+from pathlib import Path
+root = Path('/workspace')
+assert os.getuid() == os.getgid() == 0
+assert root.stat().st_uid == root.stat().st_gid == 0
+assert not list(root.iterdir())
+root.chmod(0o777)
+assert root.stat().st_mode & 0o777 == 0o777
+""",
+            )
+            run_as(
+                1001,
+                """
+import os
+from pathlib import Path
+assert os.getuid() == os.getgid() == 1001
+for name in ('before', 'after'):
+    root = Path('/workspace') / name
+    root.mkdir(mode=0o777)
+    root.chmod(0o777)
+    assert root.stat().st_uid == root.stat().st_gid == 1001
+    (root / 'ownership_fixture.py').write_text('VALUE = 42\\n', encoding='utf-8')
+""",
+            )
+            writer = """
+import os
+import sys
+from pathlib import Path
+uid = int(sys.argv[2])
+assert os.getuid() == os.getgid() == uid
+root = Path('/workspace') / sys.argv[1]
+sys.dont_write_bytecode = False
+sys.path.insert(0, str(root))
+import ownership_fixture
+assert ownership_fixture.VALUE == 42
+cache = root / '__pycache__'
+bytecode = list(cache.glob('ownership_fixture.*.pyc'))
+assert len(bytecode) == 1, list(cache.iterdir())
+private = root / 'private'
+private.mkdir(mode=0o700)
+private.chmod(0o700)
+readonly = private / 'readonly.txt'
+readonly.write_text('private artifact', encoding='utf-8')
+readonly.chmod(0o400)
+assert private.stat().st_mode & 0o777 == 0o700
+assert readonly.stat().st_mode & 0o777 == 0o400
+for path in (cache, bytecode[0], private, readonly):
+    info = path.stat()
+    assert info.st_uid == info.st_gid == uid, (str(path), info)
+    print(f'{path}: uid={info.st_uid} gid={info.st_gid} mode={info.st_mode & 0o777:o}')
+"""
+            run_as(1000, writer, "before", "1000")
+            failures = run_as(
+                1001,
+                """
+import os
+import shutil
+from pathlib import Path
+assert os.getuid() == os.getgid() == 1001
+root = Path('/workspace/before')
+for path in (root / '__pycache__', root / 'private', root):
+    try:
+        shutil.rmtree(path)
+    except PermissionError as error:
+        print(f'EXPECTED_PERMISSION_ERROR: {path}: {error}')
+    else:
+        raise AssertionError(f'UID 1001 unexpectedly removed UID 1000 artifacts: {path}')
+    assert path.exists(), path
+""",
+            )
+            self.assertEqual(failures.count("EXPECTED_PERMISSION_ERROR:"), 3, failures)
+            run_as(1001, writer, "after", "1001")
+            success = run_as(
+                1001,
+                """
+import os
+import shutil
+from pathlib import Path
+assert os.getuid() == os.getgid() == 1001
+root = Path('/workspace/after')
+shutil.rmtree(root)
+assert not root.exists()
+assert Path('/workspace/before').exists()
+print('MATCHING_UID_CLEANUP_SUCCEEDED')
+""",
+            )
+            self.assertIn("MATCHING_UID_CLEANUP_SUCCEEDED", success, success)
+        finally:
+            # Docker removes even the intentionally undeletable UID 1000 tree;
+            # no additional root container is allowed for cleanup.
+            docker.checked(["volume", "rm", "--force", volume], timeout=30)
+
+
+@unittest.skipUnless(
+    os.environ.get("AGENT_BENCH_DOCKER_TESTS") == "1",
+    "Set AGENT_BENCH_DOCKER_TESTS=1 to run prebuilt Docker integration tests",
+)
 class DockerIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -285,6 +457,7 @@ class DockerIntegrationTests(unittest.TestCase):
                     {
                         "results": report["results"],
                         "error": report.get("error"),
+                        "summary": report.get("summary"),
                         "mock_errors": server.errors,
                         "requests": server.records,
                     },
@@ -308,15 +481,17 @@ class DockerIntegrationTests(unittest.TestCase):
                         self.assertEqual(grading["tests_total"], 5)
                         self.assertEqual(grading["tests_failed"] + grading["tests_errors"], 0)
                         self.assertIn("solution/billing.py", result["patch"]["diff"])
-                        self.assertIn(FINAL_TEXT, result["logs"]["stdout"])
+                        self.assertIn(FINAL_TEXT, result["logs"]["stdout"], diagnostics)
                         self.assertGreaterEqual(result["usage"]["tool_calls"], 1)
                         self.assertGreater(result["usage"]["input_tokens"], 0)
                         self.assertGreater(result["usage"]["output_tokens"], 0)
-                self.assertEqual(report["summary"]["successes"], 3)
-                self.assertEqual(report["summary"]["success_rate"], 1)
+                self.assertEqual(report["summary"]["successes"], 3, diagnostics)
+                self.assertEqual(report["summary"]["success_rate"], 1, diagnostics)
                 self.assertEqual(report["resolved_tasks"], ["bug-fix"])
                 self.assertEqual(report["task_set_manifest"][0]["id"], "integration")
-                self.assertEqual(report["summary"]["per_task_set"]["integration"]["successes"], 3)
+                self.assertEqual(
+                    report["summary"]["per_task_set"]["integration"]["successes"], 3, diagnostics
+                )
                 self.assertEqual(output.parent, Path(directory).resolve())
                 self.assertEqual(list(Path(directory).iterdir()), [output])
                 self.assertEqual(

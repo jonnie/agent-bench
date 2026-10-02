@@ -15,9 +15,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -355,34 +356,67 @@ class Docker:
     ) -> CommandResult:
         name = f"agent-bench-{'grade' if grade else 'agent'}-{uuid.uuid4().hex[:16]}"
         args = ["docker", "run", "--rm", "--name", name, *self.limits()]
-        if grade:
-            args += [
-                "--network",
-                "none",
-                "--read-only",
-                "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=256m",
-                "--workdir",
-                "/candidate",
-            ]
-        else:
-            args += ["--network", self.config.network, "--workdir", "/workspace"]
-            if self.config.network != "host":
-                args += ["--add-host", "host.docker.internal:host-gateway"]
-        for source, target, readonly in mounts:
-            if "," in str(source) or "," in target:
-                raise ValueError("Docker bind paths cannot contain commas")
-            mount = f"type=bind,source={source.resolve()},target={target}"
-            args += ["--mount", mount + (",readonly" if readonly else "")]
-        child_env = dict(os.environ)
-        for key, value in (environment or {}).items():
-            child_env[key] = value
-            args += ["--env", key]  # Values never appear in process arguments.
-        args += [image, *command]
-        try:
-            return run_command(args, timeout, env=child_env, max_output=self.config.max_log_bytes)
-        finally:
-            self.remove(name)
+        with ExitStack() as stack:
+            run_mounts = list(mounts)
+            run_environment = dict(environment or {})
+            if grade:
+                args += [
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--tmpfs",
+                    "/tmp:rw,nosuid,nodev,size=256m",
+                    "--workdir",
+                    "/candidate",
+                ]
+            else:
+                args += ["--network", self.config.network, "--workdir", "/workspace"]
+                if self.config.network != "host":
+                    args += ["--add-host", "host.docker.internal:host-gateway"]
+                if platform.system() == "Linux" and os.getuid() != 0:
+                    # Match ownership of every agent-created file, not just Python
+                    # caches. chmod on the initial workspace cannot fix later 0700
+                    # directories owned by another UID, and umask cannot override
+                    # explicit modes. Keep root hosts on the image's nonroot user.
+                    args += ["--user", f"{os.getuid()}:{os.getgid()}"]
+                    home_root = Path(
+                        stack.enter_context(tempfile.TemporaryDirectory(prefix="agent-bench-home-"))
+                    )
+                    home = home_root / "home"
+                    home.mkdir(mode=0o700)
+                    # A numeric UID cannot write the image's UID-1000 home. Only
+                    # mount a fresh private home, never the caller's actual home.
+                    for source, target, _ in mounts:
+                        try:
+                            relative = PurePosixPath(target).relative_to("/home/bench")
+                        except ValueError:
+                            continue
+                        if ".." in relative.parts:
+                            raise ValueError("Harness home mount paths cannot traverse parents")
+                        destination = home / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        if source.is_dir():
+                            destination.mkdir(exist_ok=True)
+                        else:
+                            destination.touch(mode=0o600)
+                    run_mounts.insert(0, (home, "/home/bench", False))
+                    run_environment["HOME"] = "/home/bench"
+            for source, target, readonly in run_mounts:
+                if "," in str(source) or "," in target:
+                    raise ValueError("Docker bind paths cannot contain commas")
+                mount = f"type=bind,source={source.resolve()},target={target}"
+                args += ["--mount", mount + (",readonly" if readonly else "")]
+            child_env = dict(os.environ)
+            for key, value in run_environment.items():
+                child_env[key] = value
+                args += ["--env", key]  # Values never appear in process arguments.
+            args += [image, *command]
+            try:
+                return run_command(
+                    args, timeout, env=child_env, max_output=self.config.max_log_bytes
+                )
+            finally:
+                self.remove(name)
 
 
 def snapshot_sources(workspace: Path, destination: Path, limit: int) -> dict[str, str]:
@@ -527,7 +561,7 @@ def run_attempt(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(contents, encoding="utf-8")
                 target.chmod(0o666)
-            # UID 1000 can edit on Linux even when the host uses a different UID.
+            # Keep fixtures writable for the image user on Docker Desktop/root hosts.
             for current, _, _ in os.walk(workspace):
                 Path(current).chmod(0o777)
             adapter = prepare_harness(harness, asdict(config), root / "config")
