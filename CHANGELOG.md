@@ -4,6 +4,12 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.0 — 2026-10-02
+
+Initial experimental alpha release.
+
 ### Fixed
 
 - Linux agent containers now match a nonroot caller's UID/GID and use a private temporary writable home, preventing container-created bytecode and `0700` directories from breaking host cleanup. Root-host runs and graders retain the image's nonroot user.
@@ -25,4 +31,4 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 - Independent hidden grading, repeat scheduling, resource/time/output limits, usage and patch diagnostics, and JSON/offline HTML reports.
 - Explicit llama.cpp chat-template thinking controls and final token-limit warnings.
 
-The package version is `0.1.0`; no GitHub release or release tag has been published by this preparation step. Move these entries into a dated `0.1.0` section when cutting the initial release.
+See [release notes](docs/releases/0.1.0.md) for installation instructions and experiment limitations.

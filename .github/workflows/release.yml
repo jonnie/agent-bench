@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Verify release version and notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Require a matching stable version tag and release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
+              raise SystemExit('Expected a vMAJOR.MINOR.PATCH tag')
+          version = tag[1:]
+          metadata = tomllib.loads(Path('pyproject.toml').read_text())
+          if metadata['project']['version'] != version:
+              raise SystemExit('Tag and package metadata versions differ')
+          module = ast.parse(Path('src/agent_bench/__init__.py').read_text())
+          versions = [
+              ast.literal_eval(node.value)
+              for node in module.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == '__version__'
+                      for target in node.targets)
+          ]
+          if versions != [version]:
+              raise SystemExit('Tag and module versions differ')
+          notes = Path('docs/releases') / f'{version}.md'
+          if not notes.is_file() or not notes.read_text().strip():
+              raise SystemExit('Missing release notes')
+          if f'## {version} ' not in Path('CHANGELOG.md').read_text():
+              raise SystemExit('Missing versioned changelog entry')
+          PY
+
+  checks:
+    name: Release checks
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish experimental GitHub release
+    needs: [version, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Publish verified distributions and release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.whl dist/*.tar.gz \
+            --verify-tag \
+            --title "Agent Bench $RELEASE_TAG — experimental alpha" \
+            --notes-file "docs/releases/${RELEASE_TAG#v}.md" \
+            --prerelease \
+            --draft
+          gh release edit "$RELEASE_TAG" --draft=false

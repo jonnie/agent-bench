@@ -18,7 +18,7 @@ AGENT_BENCH_DOCKER_TESTS=1 .venv/bin/python -m unittest discover \
   -s tests -p test_docker_integration.py -v
 ```
 
-Docker checks use a local mock API, not the maintainer's LAN model. Installed development tools enable schema tests; ordinary runs deliberately skip the three opt-in Docker tests. Review any other skips.
+Docker checks use a local mock API, not the maintainer's LAN model. Installed development tools enable schema tests; ordinary runs deliberately skip the four opt-in Docker tests. Review any other skips.
 
 ## 2. Validate the artifacts
 
@@ -63,16 +63,30 @@ If Git/remotes already exist, inspect them instead of overwriting them. After pu
 - Enable branch protection/rulesets for `main`, requiring the unit, quality, and packaging checks before merging; avoid requiring the optional Docker job on every PR.
 - Run the CI workflow manually with Docker integration enabled before the first release. The scheduled job checks upstream integration weekly.
 - Add a concise repository description/topics and review the rendered README/examples. GitHub does not display the standalone HTML as a live page; download/open it locally or publish reviewed artifacts through your website.
-- Do not grant this CI publishing credentials or expose model-server keys. Workflows use `contents: read`; no `pull_request_target` workflow is needed.
+- The CI workflow uses `contents: read` and no model-server keys. The separate tag-triggered release workflow grants `contents: write` only to its publication job, after validation succeeds. No personal publishing token or `pull_request_target` workflow is needed.
+- See [GitHub setup](GITHUB_SETUP.md) for the prepared main-branch ruleset, dependency/security settings, and repository presentation.
 
 ## 6. Cut the initial release
 
-Confirm `pyproject.toml` and `src/agent_bench/__init__.py` agree on version, date the changelog, and rerun the checks. Then create the `v0.1.0` tag and GitHub release with verified wheel/sdist attachments and experiment limitations. These are separate explicit maintainer actions, not automated by CI.
+Confirm `pyproject.toml` and `src/agent_bench/__init__.py` agree on version, move changelog entries into a dated release section, and write `docs/releases/<version>.md` with installation instructions and experiment limitations. Rerun the checks and validate the wheel/sdist. Commit and push the release preparation; confirm all hosted CI checks pass on that exact commit before tagging.
+
+For the first release:
+
+```sh
+GIT_EDITOR=true git tag -a v0.1.0 -m "Agent Bench v0.1.0 — experimental alpha"
+git push origin v0.1.0
+```
+
+Tag creation remains an explicit maintainer action. Pushing a `vMAJOR.MINOR.PATCH` tag triggers `.github/workflows/release.yml`, which verifies package/module versions, the changelog and release notes, reruns the reusable CI workflow, and publishes the validated wheel/sdist from that run as a GitHub **pre-release**. Only the publication job has write permission. No PyPI publication occurs. Ordinary CI also retains validated distributions for seven days.
+
+The publication job first creates a draft with attachments and only makes it public after uploads succeed. Check the **Release** workflow and the published release assets before announcing. If failure occurs before creation, resolve the error and rerun the failed job. If a draft already exists, rerunning `gh release create` will not recover it: inspect the draft, upload only missing validated assets from that workflow run, verify both artifacts, then publish it. A failure after publication may leave a complete public release; inspect it before retrying. Do not move a public release tag or replace its artifacts. The workflow currently labels every release experimental alpha; update that policy deliberately when the project reaches a stable release.
+
+For later releases, change both package version declarations and add matching changelog/release notes. Patch releases cover fixes; minor releases can cover new features or pre-1.0 breaking changes. Explicitly document task/grading changes that affect comparability. A framework release does not, by itself, change the JSON report schema version.
 
 PyPI publishing is optional and is not configured. Availability/ownership of the name `agent-bench` on PyPI has not been verified. Do not advertise `pip install agent-bench` until you control and publish the intended distribution. Repository installation works independently:
 
 ```sh
-python3 -m pip install 'git+https://github.com/jonnie/agent-bench.git'
+python3 -m pip install 'git+https://github.com/jonnie/agent-bench.git@v0.1.0'
 ```
 
-That command becomes usable after the source has been pushed. For comparisons, record the source commit, task/test hashes, image identities, and complete remote deployment configuration; preserve original measured JSON privately and publish reviewed derivatives.
+That command becomes usable after the tag has been pushed. For comparisons, record the source commit, task/test hashes, image identities, and complete remote deployment configuration; preserve original measured JSON privately and publish reviewed derivatives.
