@@ -78,7 +78,7 @@ jobs:
       - run: python -m twine check --strict dist/*
       # Each artifact gets a separate pipless venv, no runtime deps or checkout imports.
       - run: python scripts/check_distribution.py dist/*.whl dist/*.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distributions
           path: |
