@@ -134,13 +134,28 @@ class PreparationTests(unittest.TestCase):
                     for source, destination in result["mounts"]:
                         self.assertIsInstance(source, Path)
                         self.assertTrue(source.is_file())
-                        self.assertTrue(source.is_relative_to(self.directory))
+                        self.assertTrue(source.is_relative_to(self.directory.resolve()))
                         self.assertTrue(destination.startswith("/home/bench/"))
                         self.assertNotEqual(destination, "/home/bench")
                         self.assertNotIn("docker.sock", destination)
                         self.assertEqual(source.stat().st_mode & 0o777, 0o644)
                         self.assertNotIn(secret, source.read_text())
         self.assertEqual(config, original)
+
+    def test_mount_sources_resolve_symlinked_configuration_directory(self):
+        root = self.directory / "real-config"
+        root.mkdir()
+        alias = self.directory / "config-alias"
+        alias.symlink_to(root, target_is_directory=True)
+        for harness in HARNESS_VERSIONS:
+            with self.subTest(harness=harness):
+                result = prepare_harness(harness, CONFIG, alias)
+                for source, _ in result["mounts"]:
+                    self.assertEqual(source, source.resolve())
+                    self.assertTrue(source.is_file())
+                    self.assertTrue(source.is_relative_to(alias.resolve()))
+                    self.assertFalse(source.is_relative_to(alias))
+                    self.assertEqual(source.relative_to(root.resolve()).parts[0], harness)
 
     def test_missing_or_empty_key_is_dummy_and_custom_env_is_respected(self):
         for values in ({}, {"AGENT_BENCH_API_KEY": ""}, {"OTHER_KEY": "wrong-key"}):
