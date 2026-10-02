@@ -5,6 +5,7 @@ recursive-include examples *.md *.json *.html
 recursive-include scripts *.py
 recursive-include tests *.py
 recursive-include .github/workflows *.yml
+include .github/dependabot.yml .github/main-ruleset.json
 recursive-include src/agent_bench/docker Dockerfile.*
 recursive-include src/agent_bench/schemas *.json
 

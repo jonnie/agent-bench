@@ -47,6 +47,8 @@ REQUIRED_RELEASE_FILES = {
     "docs/releases/0.1.0.md",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
+    ".github/dependabot.yml",
+    ".github/main-ruleset.json",
     "scripts/check_distribution.py",
     "scripts/make_example.py",
     "examples/README.md",

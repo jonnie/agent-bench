@@ -18,7 +18,20 @@ In [Settings → Rules → Rulesets](https://github.com/jonnie/agent-bench/setti
 - Do not require `Docker integration (local mock, no inference)`: it runs manually/weekly, not on every PR.
 - Leave bypass actors empty unless you deliberately choose a maintenance policy. Do not require an external reviewer for your own changes.
 
-Only apply protection **after** the initial release preparation has been pushed. Future changes should use branches and PRs. An active ruleset applies to direct pushes too; an SSH key is not an automatic bypass.
+The ready-to-import payload is [`.github/main-ruleset.json`](../.github/main-ruleset.json). Use **New ruleset → Import a ruleset** to upload it, then inspect and save it. The required checks are bound to the GitHub Actions app (integration ID `15368`) and match the names observed in this repository's CI.
+
+Alternatively, install and authenticate the GitHub CLI with repository administration access, inspect existing rulesets, and create this ruleset **only if an equivalent one does not already exist**:
+
+```sh
+gh auth login --hostname github.com --web
+gh api repos/jonnie/agent-bench/rulesets
+gh api --method POST repos/jonnie/agent-bench/rulesets \
+  --input .github/main-ruleset.json
+```
+
+For an existing equivalent ruleset, edit it in the UI rather than creating overlapping duplicates. Verify it shows **Active** and covers `main`; keeping JSON in Git does not apply protection.
+
+Only apply protection **after** the initial release preparation and setup commits have been pushed. Future changes should use branches and PRs. An active ruleset applies to direct pushes too; an SSH key is not an automatic bypass.
 
 ## Security and dependencies
 
@@ -29,7 +42,7 @@ In [Settings → Code security](https://github.com/jonnie/agent-bench/settings/s
 - Dependabot security updates are enabled. These create PRs; they do not authorize automatic merging.
 - Private vulnerability reporting is enabled, matching `SECURITY.md`.
 
-The repository can schedule Dependabot version updates for GitHub Actions and Python development dependencies using `.github/dependabot.yml`. Review each update through CI; direct harness pins in Dockerfiles require separate manual review and Docker integration because harness changes affect measurements. Do not mix automatic dependency updating with automatic merging or release publication.
+[`.github/dependabot.yml`](../.github/dependabot.yml) schedules weekly Monday updates at 07:00 UTC for GitHub Actions and Python development dependencies, with a five-PR limit per ecosystem. Python development updates are grouped. Review each update through CI; direct harness pins in Dockerfiles require separate manual review and Docker integration because harness changes affect measurements. Do not mix automatic dependency updating with automatic merging or release publication.
 
 With an authenticated GitHub CLI and appropriate repository administration permissions, alert/security-update settings can also be enabled explicitly:
 

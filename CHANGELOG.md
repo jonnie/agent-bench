@@ -4,7 +4,10 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Weekly Dependabot version-update configuration for GitHub Actions and Python development dependencies; updates require review rather than automatic merging.
+- An importable `main` branch ruleset requiring CI and pull requests with no mandatory external approval, plus owner-level GitHub setup instructions. Committed configuration does not itself enable branch protection or security-alert settings.
 
 ## 0.1.0 — 2026-10-02
 
