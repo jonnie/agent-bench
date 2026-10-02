@@ -33,11 +33,11 @@ Documentation = "https://github.com/jonnie/agent-bench/tree/main/docs"
 
 [project.optional-dependencies]
 dev = [
-    "ruff==0.11.0",
-    "pyright==1.1.396",
-    "jsonschema==4.23.0",
-    "build==1.2.2.post1",
-    "twine==6.1.0",
+    "ruff==0.16.9",
+    "pyright==1.1.414",
+    "jsonschema==4.26.0",
+    "build==1.6.1",
+    "twine==7.0.0",
 ]
 
 [project.scripts]
