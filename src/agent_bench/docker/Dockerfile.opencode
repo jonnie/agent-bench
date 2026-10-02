@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=agent-bench-base:local
+FROM ${BASE_IMAGE}
+ARG HARNESS_VERSION=1.18.34
+
+USER root
+# Lifecycle scripts initialize runtime directories. Keep their HOME separate;
+# restore ownership of any caches created in bench's home (including emulation).
+RUN HOME=/root npm install --global "opencode-ai@${HARNESS_VERSION}" \
+    && HOME=/root npm cache clean --force \
+    && chown -R bench:bench /home/bench
+
+USER bench
+WORKDIR /workspace
+RUN opencode --version
+ENTRYPOINT []
+CMD ["bash"]

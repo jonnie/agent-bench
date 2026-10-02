@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      docker_integration:
+        description: Build upstream harness images and run local-mock Docker integration
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 6 * * 1'
+
+# No publishing, write tokens, secrets, or model credentials are needed.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PYTHONUTF8: '1'
+
+jobs:
+  unit:
+    name: Unit (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: macos-latest
+            python: '3.11'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install '.[dev]'
+      # Ordinary tests are offline; real Docker tests opt in only in their own job.
+      - run: python -m unittest discover -s tests -v
+
+  quality:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install '.[dev]'
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m pyright src tests scripts
+
+  packaging:
+    name: Build and isolated distribution smoke checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install '.[dev]'
+      # build creates the wheel from the sdist, also checking sdist completeness.
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      # Each artifact gets a separate pipless venv, no runtime deps or checkout imports.
+      - run: python scripts/check_distribution.py dist/*.whl dist/*.tar.gz
+
+  docker-integration:
+    name: Docker integration (local mock, no inference)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.docker_integration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AGENT_BENCH_DOCKER_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install '.[dev]'
+      - run: docker info
+      # Builds contact upstream registries/package repositories; pinned direct
+      # versions do not freeze mutable base tags or all transitive dependencies.
+      # Use disposable hosted runners: Docker is not a hostile-code security boundary.
+      # Never run pull_request_target or expose credentials to candidate containers.
+      - run: agent-bench build --build-timeout 900
+      - name: Require real Docker tests to execute without skips
+        run: |
+          python - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests', pattern='test_docker_integration.py')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or not result.testsRun or result.skipped:
+              raise SystemExit('Docker integration failed, ran no tests, or skipped tests')
+          PY

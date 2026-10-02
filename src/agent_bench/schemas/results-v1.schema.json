@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agent-bench results, schema_version 1",
+  "description": "Complete, running, interrupted, and startup-error reports. Known fields are constrained; additive properties are allowed. Task-set and later diagnostic fields are optional for historical version-1 reports. This is a structural contract, not verification of measurements or aggregate arithmetic.",
+  "type": "object",
+  "required": [
+    "schema_version", "framework_version", "run_id", "created_at", "finished_at",
+    "status", "model", "parameters", "environment", "task_manifest", "results",
+    "summary", "methodology"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "framework_version": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "finished_at": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "status": {"type": "string", "enum": ["running", "completed", "interrupted", "error"]},
+    "error": {"type": ["string", "null"]},
+    "model": {"$ref": "#/$defs/model"},
+    "parameters": {"$ref": "#/$defs/parameters"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "task_manifest": {"type": "array", "items": {"$ref": "#/$defs/task"}},
+    "task_set_manifest": {"type": "array", "items": {"$ref": "#/$defs/taskSet"}},
+    "resolved_tasks": {"$ref": "#/$defs/names"},
+    "schedule": {"type": "array", "items": {"$ref": "#/$defs/scheduledAttempt"}},
+    "results": {"type": "array", "items": {"$ref": "#/$defs/attempt"}},
+    "summary": {"$ref": "#/$defs/summary"},
+    "methodology": {
+      "type": "object",
+      "properties": {
+        "score": {"type": "string"},
+        "execution_errors": {"type": "string"},
+        "repeats": {"type": "string"},
+        "task_sets": {"type": "string"},
+        "durations": {"type": "string"},
+        "usage": {"type": "string"},
+        "termination": {"type": "string"},
+        "limits": {"type": "string"},
+        "scope": {"type": "string"},
+        "submission": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp. The pattern checks shape even when optional date-time format checking is unavailable; format checking validates calendar semantics.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0},
+    "positiveCount": {"type": "integer", "minimum": 1},
+    "unknownCount": {"type": ["integer", "null"], "minimum": 0},
+    "nonnegative": {"type": "number", "minimum": 0},
+    "positive": {"type": "number", "exclusiveMinimum": 0},
+    "unknownNonnegative": {"type": ["number", "null"], "minimum": 0},
+    "score": {"type": "number", "minimum": 0, "maximum": 100},
+    "unknownScore": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+    "rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "nullableNames": {"anyOf": [{"$ref": "#/$defs/names"}, {"type": "null"}]},
+    "model": {
+      "type": "object",
+      "required": ["id", "base_url", "context_window", "max_tokens"],
+      "properties": {
+        "id": {"type": "string"},
+        "base_url": {"type": "string"},
+        "context_window": {"$ref": "#/$defs/positiveCount"},
+        "max_tokens": {"$ref": "#/$defs/positiveCount"},
+        "reasoning": {"type": "boolean"},
+        "thinking": {"type": "string"},
+        "api_profile": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "model": {"type": "string"},
+        "base_url": {"type": "string"},
+        "harnesses": {"$ref": "#/$defs/names"},
+        "tasks": {"$ref": "#/$defs/nullableNames"},
+        "task_sets": {"$ref": "#/$defs/nullableNames"},
+        "output": {"type": "string"},
+        "repeats": {"$ref": "#/$defs/positiveCount"},
+        "timeout": {"$ref": "#/$defs/positive"},
+        "grade_timeout": {"$ref": "#/$defs/positive"},
+        "build_timeout": {"$ref": "#/$defs/positive"},
+        "cpus": {"$ref": "#/$defs/positive"},
+        "memory": {"type": "string"},
+        "pids_limit": {"$ref": "#/$defs/positiveCount"},
+        "context_window": {"$ref": "#/$defs/positiveCount"},
+        "max_tokens": {"$ref": "#/$defs/positiveCount"},
+        "reasoning": {"type": "boolean"},
+        "thinking": {"type": "string"},
+        "api_profile": {"type": "string"},
+        "tool_profile": {"type": "string"},
+        "seed": {"type": "integer"},
+        "api_key_env": {"type": "string"},
+        "input_price": {"$ref": "#/$defs/unknownNonnegative"},
+        "output_price": {"$ref": "#/$defs/unknownNonnegative"},
+        "network": {"type": "string"},
+        "platform": {"type": ["string", "null"]},
+        "build": {"type": "boolean"},
+        "max_log_bytes": {"$ref": "#/$defs/positiveCount"},
+        "max_source_bytes": {"$ref": "#/$defs/positiveCount"},
+        "harness_versions": {"type": "object", "additionalProperties": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "environment": {
+      "type": "object",
+      "description": "Host metadata exists before Docker starts. Docker and image metadata are optional because startup may fail.",
+      "properties": {
+        "host": {
+          "type": "object",
+          "properties": {
+            "system": {"type": "string"},
+            "machine": {"type": "string"},
+            "python": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "credential_present": {"type": "boolean"},
+        "docker": {
+          "type": "object",
+          "properties": {
+            "version": {"type": "object", "additionalProperties": true},
+            "daemon": {
+              "type": "object",
+              "properties": {
+                "OSType": {"type": ["string", "null"]},
+                "Architecture": {"type": ["string", "null"]},
+                "OperatingSystem": {"type": ["string", "null"]},
+                "NCPU": {"$ref": "#/$defs/unknownCount"},
+                "MemTotal": {"$ref": "#/$defs/unknownCount"}
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "base_image": {"$ref": "#/$defs/image"},
+        "harness_images": {"type": "object", "additionalProperties": {"$ref": "#/$defs/image"}}
+      },
+      "additionalProperties": true
+    },
+    "image": {
+      "type": "object",
+      "required": ["tag", "id"],
+      "properties": {
+        "tag": {"type": "string"},
+        "id": {"type": "string"},
+        "repo_digests": {"type": ["array", "null"], "items": {"type": "string"}},
+        "architecture": {"type": ["string", "null"]},
+        "os": {"type": ["string", "null"]},
+        "created": {"type": ["string", "null"], "format": "date-time"}
+      },
+      "additionalProperties": true
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "title", "category", "prompt", "metadata", "fixture_sha256", "hidden_tests_sha256"],
+      "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "category": {"type": "string"},
+        "prompt": {"type": "string"},
+        "metadata": {"type": "object", "additionalProperties": true},
+        "fixture_sha256": {"$ref": "#/$defs/sha256"},
+        "hidden_tests_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "taskSet": {
+      "type": "object",
+      "required": ["id", "title", "description", "task_ids"],
+      "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "task_ids": {"$ref": "#/$defs/names"}
+      },
+      "additionalProperties": true
+    },
+    "scheduledAttempt": {
+      "type": "object",
+      "required": ["harness", "task_id", "repeat"],
+      "properties": {
+        "harness": {"type": "string"},
+        "task_id": {"type": "string"},
+        "repeat": {"$ref": "#/$defs/positiveCount"},
+        "task_sets": {"$ref": "#/$defs/names"}
+      },
+      "additionalProperties": true
+    },
+    "attempt": {
+      "type": "object",
+      "description": "One started harness/task/repeat observation. Execution-dependent fields may be absent; empty usage, termination, patch, and logs objects are valid before execution.",
+      "required": [
+        "harness", "task_id", "task_title", "category", "repeat", "status", "score",
+        "duration_seconds", "agent_exit_code", "grading", "usage", "patch", "logs",
+        "started_at", "finished_at"
+      ],
+      "properties": {
+        "harness": {"type": "string"},
+        "task_id": {"type": "string"},
+        "task_title": {"type": "string"},
+        "category": {"type": "string"},
+        "repeat": {"$ref": "#/$defs/positiveCount"},
+        "task_sets": {"$ref": "#/$defs/names"},
+        "status": {"type": "string", "enum": ["success", "failed", "timeout", "error", "interrupted"]},
+        "score": {"$ref": "#/$defs/score"},
+        "duration_seconds": {"$ref": "#/$defs/nonnegative"},
+        "agent_duration_seconds": {"$ref": "#/$defs/nonnegative"},
+        "grade_duration_seconds": {"$ref": "#/$defs/nonnegative"},
+        "agent_exit_code": {"type": ["integer", "null"]},
+        "grader_exit_code": {"type": "integer"},
+        "grading": {"anyOf": [{"$ref": "#/$defs/grading"}, {"type": "null"}]},
+        "usage": {"$ref": "#/$defs/usage"},
+        "termination": {"$ref": "#/$defs/termination"},
+        "patch": {"$ref": "#/$defs/patch"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "logs": {
+          "type": "object",
+          "properties": {
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"},
+            "grader_stdout": {"type": "string"},
+            "grader_stderr": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "harness_configuration": {"$ref": "#/$defs/harnessConfiguration"},
+        "prompt": {"type": "string"},
+        "error": {"type": "string"},
+        "abort_run": {"type": "boolean"},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "finished_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": true
+    },
+    "harnessConfiguration": {
+      "type": "object",
+      "description": "Secret-free adapter configuration. Prices are USD per million tokens; api_key_env is a host variable name, not its value. Additional effective request controls are retained.",
+      "properties": {
+        "model": {"type": "string"},
+        "base_url": {"type": "string"},
+        "context_window": {"$ref": "#/$defs/positiveCount"},
+        "max_tokens": {"$ref": "#/$defs/positiveCount"},
+        "reasoning": {"type": "boolean"},
+        "thinking": {"type": "string"},
+        "api_key_env": {"type": "string"},
+        "api_profile": {"type": "string"},
+        "tool_profile": {"type": "string"},
+        "input_price": {"$ref": "#/$defs/unknownNonnegative"},
+        "output_price": {"$ref": "#/$defs/unknownNonnegative"}
+      },
+      "additionalProperties": true
+    },
+    "grading": {
+      "type": "object",
+      "required": ["tests_total", "tests_passed", "tests_failed", "tests_errors", "score", "success", "cases"],
+      "properties": {
+        "tests_total": {"$ref": "#/$defs/positiveCount"},
+        "tests_passed": {"$ref": "#/$defs/count"},
+        "tests_failed": {"$ref": "#/$defs/count"},
+        "tests_errors": {"$ref": "#/$defs/count"},
+        "score": {"$ref": "#/$defs/score"},
+        "success": {"type": "boolean"},
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "detail"],
+            "properties": {
+              "name": {"type": "string"},
+              "status": {"type": "string", "enum": ["passed", "failed", "error"]},
+              "detail": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "duration_seconds": {"$ref": "#/$defs/nonnegative"},
+        "metrics": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": true
+    },
+    "usage": {
+      "type": "object",
+      "description": "Primary-stream totals. Empty before agent execution; null fields are unknown, not zero.",
+      "properties": {
+        "input_tokens": {"$ref": "#/$defs/unknownCount"},
+        "output_tokens": {"$ref": "#/$defs/unknownCount"},
+        "cache_read_tokens": {"$ref": "#/$defs/unknownCount"},
+        "cache_write_tokens": {"$ref": "#/$defs/unknownCount"},
+        "tool_calls": {"$ref": "#/$defs/unknownCount"},
+        "estimated_cost_usd": {"$ref": "#/$defs/unknownNonnegative"},
+        "cost_note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "termination": {
+      "type": "object",
+      "description": "Last emitted completed response, not aggregate usage. Provider reasons are open strings; output and reasoning counts can overlap.",
+      "properties": {
+        "reason": {"type": ["string", "null"]},
+        "output_tokens": {"$ref": "#/$defs/unknownCount"},
+        "reasoning_tokens": {"$ref": "#/$defs/unknownCount"},
+        "warning": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "patch": {
+      "type": "object",
+      "properties": {
+        "files_changed": {"$ref": "#/$defs/count"},
+        "lines_added": {"$ref": "#/$defs/count"},
+        "lines_removed": {"$ref": "#/$defs/count"},
+        "diff": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Rates use recorded attempts as denominator and are null when empty. Means use known observations. Token/cost/tool totals include known observations only; usage_samples records per-field coverage. This schema does not check arithmetic consistency.",
+      "required": ["attempts", "successes", "success_rate", "completion_rate", "mean_score", "mean_duration_seconds", "tokens"],
+      "properties": {
+        "attempts": {"$ref": "#/$defs/count"},
+        "successes": {"$ref": "#/$defs/count"},
+        "success_rate": {"$ref": "#/$defs/rate"},
+        "completion_rate": {"$ref": "#/$defs/rate"},
+        "mean_score": {"$ref": "#/$defs/unknownScore"},
+        "mean_duration_seconds": {"$ref": "#/$defs/unknownNonnegative"},
+        "median_duration_seconds": {"$ref": "#/$defs/unknownNonnegative"},
+        "score_stddev": {"$ref": "#/$defs/unknownNonnegative"},
+        "scores_known": {"$ref": "#/$defs/count"},
+        "durations_known": {"$ref": "#/$defs/count"},
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "input_tokens": {"$ref": "#/$defs/count"},
+            "output_tokens": {"$ref": "#/$defs/count"},
+            "cache_read_tokens": {"$ref": "#/$defs/count"},
+            "cache_write_tokens": {"$ref": "#/$defs/count"}
+          },
+          "additionalProperties": true
+        },
+        "usage_samples": {
+          "type": "object",
+          "properties": {
+            "input_tokens": {"$ref": "#/$defs/count"},
+            "output_tokens": {"$ref": "#/$defs/count"},
+            "cache_read_tokens": {"$ref": "#/$defs/count"},
+            "cache_write_tokens": {"$ref": "#/$defs/count"},
+            "tool_calls": {"$ref": "#/$defs/count"},
+            "estimated_cost_usd": {"$ref": "#/$defs/count"}
+          },
+          "additionalProperties": true
+        },
+        "tool_calls": {"$ref": "#/$defs/count"},
+        "estimated_cost_usd": {"$ref": "#/$defs/nonnegative"}
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "allOf": [{"$ref": "#/$defs/metrics"}],
+      "type": "object",
+      "required": ["per_harness"],
+      "properties": {
+        "per_harness": {"type": "object", "additionalProperties": {"$ref": "#/$defs/metrics"}},
+        "per_task_set": {"type": "object", "additionalProperties": {"$ref": "#/$defs/summary"}}
+      },
+      "additionalProperties": true
+    }
+  }
+}

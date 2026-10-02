@@ -1,0 +1,21 @@
+{
+  "model": "qwen-coder",
+  "base_url": "http://192.168.1.50:8080/v1",
+  "api_profile": "llama-cpp",
+  "harnesses": ["pi", "oh-my-pi", "opencode"],
+  "task_sets": ["core", "robustness"],
+  "output": "results",
+  "repeats": 3,
+  "timeout": 600,
+  "grade_timeout": 60,
+  "cpus": 2,
+  "memory": "4g",
+  "context_window": 32768,
+  "max_tokens": 4096,
+  "reasoning": false,
+  "thinking": "off",
+  "tool_profile": "native",
+  "seed": 42,
+  "api_key_env": "AGENT_BENCH_API_KEY",
+  "build": true
+}

@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-bench"
+version = "0.1.0"
+description = "Docker-isolated coding harness benchmarks for one LAN-hosted LLM"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Agent Bench contributors"}]
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/jonnie/agent-bench"
+Source = "https://github.com/jonnie/agent-bench"
+Issues = "https://github.com/jonnie/agent-bench/issues"
+Changelog = "https://github.com/jonnie/agent-bench/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/jonnie/agent-bench/tree/main/docs"
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.11.0",
+    "pyright==1.1.396",
+    "jsonschema==4.23.0",
+    "build==1.2.2.post1",
+    "twine==6.1.0",
+]
+
+[project.scripts]
+agent-bench = "agent_bench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agent_bench*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"agent_bench.docker" = ["Dockerfile.*"]
+"agent_bench.schemas" = ["*.json"]
+
+[tool.pyright]
+extraPaths = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["F", "I", "UP017"]

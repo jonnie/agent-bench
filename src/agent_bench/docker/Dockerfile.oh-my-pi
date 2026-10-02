@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=agent-bench-base:local
+FROM ${BASE_IMAGE}
+ARG HARNESS_VERSION=18.4.8
+
+USER root
+# Keep Bun's global package directory accessible after dropping root.
+ENV BUN_INSTALL=/opt/bun
+RUN HOME=/root bun install --global "@oh-my-pi/pi-coding-agent@${HARNESS_VERSION}" \
+    && ln -s /opt/bun/bin/omp /usr/local/bin/omp \
+    && chmod -R a+rX /opt/bun \
+    && chown -R bench:bench /home/bench
+
+USER bench
+WORKDIR /workspace
+RUN omp --version
+ENTRYPOINT []
+CMD ["bash"]
