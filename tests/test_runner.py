@@ -229,6 +229,264 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(result["score"], 0)
                 self.assertTrue(result["grading"]["success"])
 
+    def test_failed_grade_records_assertion_outcome_without_execution_error(self):
+        grading = {
+            **grade(False),
+            "tests_total": 2,
+            "tests_passed": 1,
+            "score": 50,
+            "cases": [
+                {"name": "hidden.basic", "status": "passed", "detail": ""},
+                {
+                    "name": "hidden.quoted_field",
+                    "status": "failed",
+                    "detail": (
+                        "Traceback (most recent call last):\n"
+                        '  File "/grader/hidden_tests.py", line 42, in test_parser\n'
+                        "AssertionError: quoted field should remain intact\n"
+                    ),
+                },
+            ],
+        }
+        result = run_attempt(
+            FakeDocker(grading=CommandResult(0, json.dumps(grading), "", 0.1)),
+            RunConfig(model="coder"),
+            TASKS["bug-fix"],
+            "pi",
+            1,
+            "a",
+            "b",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["score"], 50)
+        self.assertEqual(result["grading"], grading)
+        self.assertNotIn("error", result)
+        self.assertRegex(result["outcome_reason"], r"\b1\s*(?:/|of|out of)\s*2\b")
+        self.assertIn("hidden.quoted_field", result["outcome_reason"])
+        self.assertIn("AssertionError", result["outcome_reason"])
+        self.assertIn("quoted field should remain intact", result["outcome_reason"])
+
+    def test_candidate_import_error_is_failed_grade_not_harness_error(self):
+        grading = {
+            **grade(False),
+            "tests_failed": 0,
+            "tests_errors": 1,
+            "cases": [
+                {
+                    "name": "hidden.import_candidate",
+                    "status": "error",
+                    "detail": "ModuleNotFoundError: No module named 'candidate_dependency'",
+                }
+            ],
+        }
+        result = run_attempt(
+            FakeDocker(grading=CommandResult(0, json.dumps(grading), "", 0.1)),
+            RunConfig(model="coder"),
+            TASKS["bug-fix"],
+            "pi",
+            1,
+            "a",
+            "b",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["agent_exit_code"], 0)
+        self.assertEqual(result["grader_exit_code"], 0)
+        self.assertEqual(result["grading"], grading)
+        self.assertNotIn("error", result)
+        self.assertRegex(result["outcome_reason"], r"\b0\s*(?:/|of|out of)\s*1\b")
+        self.assertIn("hidden.import_candidate", result["outcome_reason"])
+        self.assertIn("ModuleNotFoundError", result["outcome_reason"])
+        self.assertIn("candidate_dependency", result["outcome_reason"])
+
+    def test_timeout_passing_patch_keeps_diagnostic_grade_and_observed_usage_only(self):
+        stream = "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "tool_execution_start", "toolCallId": "read"},
+                {"type": "tool_execution_start", "toolCallId": "edit"},
+                {"type": "tool_execution_start", "toolCallId": "test"},
+                {"type": "message_end", "message": {"role": "assistant", "stopReason": "toolUse"}},
+                {"type": "message_start", "message": {"role": "assistant", "stopReason": "stop"}},
+            )
+        )
+        docker = FakeDocker(agent=CommandResult(-9, stream, "", 0.1, timed_out=True))
+        result = run_attempt(
+            docker, RunConfig(model="coder", timeout=600), TASKS["bug-fix"], "pi", 1, "a", "b"
+        )
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["score"], 0)
+        self.assertEqual(result["grading"], grade())
+        self.assertIn("600", result["error"])
+        self.assertIn(result["error"], result["outcome_reason"])
+        self.assertEqual(result["usage"]["tool_calls"], 3)
+        for field in ("input_tokens", "output_tokens", "estimated_cost_usd"):
+            self.assertIsNone(result["usage"][field])
+        self.assertEqual(result["termination"]["reason"], "toolUse")
+        self.assertIsNone(result["termination"]["output_tokens"])
+        self.assertIsNone(result["termination"]["reasoning_tokens"])
+        self.assertRegex(result["outcome_reason"].lower(), r"tool[_ -]?calls?[^.;\n]*\b3\b")
+        self.assertIn("toolUse", result["outcome_reason"])
+        self.assertIn("100", result["outcome_reason"])
+        self.assertIn("diagnostic", result["outcome_reason"].lower())
+        self.assertRegex(
+            result["outcome_reason"].lower(), r"(?:no|not|cannot|doesn't|does not).*credit"
+        )
+        self.assertEqual(docker.calls[0]["timeout"], 600)
+        self.assertEqual(len(docker.calls), 2)
+
+    def test_agent_output_limit_names_log_limit_not_model_token_limit(self):
+        result = run_attempt(
+            FakeDocker(agent=CommandResult(-9, "truncated output", "", 0.1, output_limited=True)),
+            RunConfig(model="coder", max_log_bytes=1234),
+            TASKS["bug-fix"],
+            "pi",
+            1,
+            "a",
+            "b",
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["score"], 0)
+        self.assertEqual(result["grading"], grade())
+        self.assertIn("output", result["error"].lower())
+        self.assertIn("--max-log-bytes", result["error"])
+        self.assertNotIn("--max-tokens", result["error"])
+        self.assertIn(result["error"], result["outcome_reason"])
+        self.assertIn("diagnostic", result["outcome_reason"].lower())
+        self.assertIn("credit", result["outcome_reason"].lower())
+        self.assertIsNone(result["usage"]["input_tokens"])
+        self.assertIsNone(result["usage"]["output_tokens"])
+        self.assertIsNone(result["usage"]["tool_calls"])
+
+    def test_grading_timeout_names_configured_grade_timeout(self):
+        docker = FakeDocker(grading=CommandResult(-9, "", "", 0.1, timed_out=True))
+        result = run_attempt(
+            docker,
+            RunConfig(model="coder", timeout=600, grade_timeout=73),
+            TASKS["bug-fix"],
+            "pi",
+            1,
+            "a",
+            "b",
+        )
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["score"], 0)
+        self.assertIsNone(result["grading"])
+        self.assertIn("grad", result["error"].lower())
+        self.assertIn("73", result["error"])
+        self.assertNotIn("600", result["error"])
+        self.assertIn(result["error"], result["outcome_reason"])
+        self.assertEqual(docker.calls[1]["timeout"], 73)
+
+    def test_grading_nonzero_exit_and_output_limit_have_distinct_errors(self):
+        errors = []
+        for grading, limited in (
+            (CommandResult(7, json.dumps(grade()), "grader crashed", 0.1), False),
+            (CommandResult(-9, "truncated", "", 0.1, output_limited=True), True),
+        ):
+            with self.subTest(limited=limited):
+                result = run_attempt(
+                    FakeDocker(grading=grading),
+                    RunConfig(model="coder", max_log_bytes=1234),
+                    TASKS["bug-fix"],
+                    "pi",
+                    1,
+                    "a",
+                    "b",
+                )
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(result["score"], 0)
+                self.assertIsNone(result["grading"])
+                self.assertIn("grad", result["error"].lower())
+                self.assertIn(result["error"], result["outcome_reason"])
+                if limited:
+                    self.assertIn("output", result["error"].lower())
+                    self.assertIn("--max-log-bytes", result["error"])
+                    self.assertNotIn("--max-tokens", result["error"])
+                else:
+                    self.assertIn("exit", result["error"].lower())
+                    self.assertIn("7", result["error"])
+                    self.assertNotIn("output limit", result["error"].lower())
+                errors.append(result["error"])
+        self.assertEqual(len(errors), 2)
+        self.assertNotEqual(errors[0], errors[1])
+
+    def test_zero_exit_normal_completion_records_outcome_without_error(self):
+        result = run_attempt(
+            FakeDocker(), RunConfig(model="coder"), TASKS["bug-fix"], "pi", 1, "a", "b"
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["agent_exit_code"], 0)
+        self.assertEqual(result["grader_exit_code"], 0)
+        self.assertNotIn("error", result)
+        self.assertRegex(result["outcome_reason"], r"\b1\s*(?:/|of|out of)\s*1\b")
+        self.assertNotIn("n/a", result["outcome_reason"].lower())
+
+    def test_finalize_errors_always_record_outcome(self):
+        for target in ("prepare_harness", "snapshot_sources"):
+            with (
+                self.subTest(target=target),
+                patch(
+                    "agent_bench.runner." + target, side_effect=ValueError("fixture setup failed")
+                ),
+            ):
+                result = run_attempt(
+                    FakeDocker(), RunConfig(model="coder"), TASKS["bug-fix"], "pi", 1, "a", "b"
+                )
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["score"], 0)
+            self.assertIn("fixture setup failed", result["outcome_reason"])
+            self.assertIn(result["error"], result["outcome_reason"])
+            self.assertIn("finished_at", result)
+
+    def test_outcome_is_added_before_secret_redaction_for_grade_and_execution_errors(self):
+        secret = "OUTCOME-SECRET-123"
+        grading = {
+            **grade(False),
+            "cases": [
+                {
+                    "name": "hidden.secret_case",
+                    "status": "failed",
+                    "detail": f"AssertionError: unexpected credential {secret}",
+                }
+            ],
+        }
+        for docker, expected_status in (
+            (FakeDocker(grading=CommandResult(0, json.dumps(grading), "", 0.1)), "failed"),
+            (
+                FakeDocker(
+                    agent=CommandResult(
+                        0,
+                        json.dumps({"type": "error", "message": f"endpoint rejected {secret}"}),
+                        "",
+                        0.1,
+                    )
+                ),
+                "error",
+            ),
+        ):
+            with (
+                self.subTest(status=expected_status),
+                patch.dict(os.environ, {"OUTCOME_TEST_API_KEY": secret}),
+            ):
+                result = run_attempt(
+                    docker,
+                    RunConfig(model="coder", api_key_env="OUTCOME_TEST_API_KEY"),
+                    TASKS["bug-fix"],
+                    "pi",
+                    1,
+                    "a",
+                    "b",
+                )
+            self.assertEqual(result["status"], expected_status)
+            self.assertIn("[REDACTED]", result["outcome_reason"])
+            self.assertNotIn(secret, result["outcome_reason"])
+            self.assertNotIn(secret, json.dumps(result))
+            if expected_status == "failed":
+                self.assertNotIn("error", result)
+                self.assertIn("AssertionError", result["outcome_reason"])
+            else:
+                self.assertIn(result["error"], result["outcome_reason"])
+
     def test_length_warning_preserves_correctness_status_and_configuration(self):
         partial = {
             **grade(False),
@@ -274,6 +532,8 @@ class RunnerTests(unittest.TestCase):
                         self.assertEqual(result["score"], grading["score"])
                         self.assertEqual(result["grading"], grading)
                         self.assertNotIn("error", result)
+                        self.assertTrue(result["outcome_reason"])
+                        self.assertNotIn("n/a", result["outcome_reason"].lower())
                         self.assertEqual(result["termination"]["reason"], "length")
                         self.assertEqual(result["termination"]["output_tokens"], 4096)
                         self.assertEqual(result["termination"]["reasoning_tokens"], 4000)
@@ -358,6 +618,7 @@ class RunnerTests(unittest.TestCase):
                 )
                 self.assertIn(result["status"], {"timeout", "error"})
                 self.assertEqual(result["score"], 0)
+                self.assertIn(result["error"], result["outcome_reason"])
 
     def test_docker_grade_flags_and_cleanup(self):
         config = RunConfig(model="coder")
@@ -540,6 +801,8 @@ class RunnerTests(unittest.TestCase):
             )
         self.assertTrue(result["abort_run"])
         self.assertEqual(result["status"], "error")
+        self.assertIn("shutdown unconfirmed", result["outcome_reason"])
+        self.assertIn(result["error"], result["outcome_reason"])
         snapshot.assert_not_called()
 
     def test_interrupt_retains_current_attempt_diagnostics(self):
@@ -559,6 +822,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["score"], 0)
         self.assertEqual(result["logs"]["stdout"], "retained-agent-output")
         self.assertIn("patch", result)
+        self.assertIn(result["error"], result["outcome_reason"])
+        self.assertIn("interrupt", result["outcome_reason"].lower())
 
     def test_fast_exiting_output_still_exceeds_limit(self):
         result = run_command(["python3", "-c", "print('x'*10000)"], 5, max_output=100)
@@ -676,6 +941,33 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("Task-set-by-harness comparison", html)
             self.assertIn("Core", html)
             self.assertEqual({p.name for p in output.iterdir()}, {"results.json", "results.html"})
+
+    def test_orchestration_prints_and_persists_correctness_failure_reason(self):
+        console = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch("agent_bench.runner.Docker") as docker,
+            patch("sys.stdout", console),
+        ):
+            docker.return_value.available.return_value = {}
+            docker.return_value.image_metadata.side_effect = lambda tag: {"id": "immutable:" + tag}
+            docker.return_value.execute.side_effect = lambda **kwargs: (
+                CommandResult(0, json.dumps(grade(False)), "", 0.1)
+                if kwargs.get("grade")
+                else CommandResult(0, "", "", 0.1)
+            )
+            report, output = run_benchmark(
+                RunConfig(
+                    model="coder", harnesses=["pi"], tasks=["bug-fix"], build=False, output=temp
+                )
+            )
+            result = report["results"][0]
+            self.assertEqual(result["status"], "failed")
+            self.assertNotIn("error", result)
+            self.assertIn("  Outcome: " + result["outcome_reason"], console.getvalue())
+            self.assertIn("hidden.case", console.getvalue())
+            saved = json.loads((output / "results.json").read_text())
+            self.assertEqual(saved["results"][0]["outcome_reason"], result["outcome_reason"])
 
     def test_orchestration_prints_and_persists_warning_without_changing_run_status(self):
         for warning in (None, "Final response-token budget exhausted; diagnostic only"):

@@ -4,6 +4,11 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 
 ## Unreleased
 
+### Fixed
+
+- Attempt reports now distinguish correctness failures from execution errors instead of showing a misleading `Error: n/a`. New JSON includes an optional outcome explanation; historical reports derive explanations from recorded grading without changing scores or data.
+- Timeout/output-limit errors identify the configured limit and CLI flag. Outcome explanations include emitted tool counts, final stop reasons, and explicitly diagnostic grading of partial patches after execution failure.
+
 ### Added
 
 - Weekly Dependabot version-update configuration for GitHub Actions and Python development dependencies; updates require review rather than automatic merging.

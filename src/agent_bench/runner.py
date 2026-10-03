@@ -32,7 +32,7 @@ from .harnesses import (
     parse_usage,
     prepare_harness,
 )
-from .report import summarize, write_reports
+from .report import describe_outcome, summarize, write_reports
 from .task_sets import DEFAULT_TASK_SETS, TaskSet, get_task_sets, resolve_tasks
 from .tasks import Task
 
@@ -622,9 +622,22 @@ def run_attempt(
             result["grader_exit_code"] = grade.returncode
             observed_error = harness_error(harness, agent.stdout)
             if grade.timed_out:
-                result.update(status="timeout", error="Grading exceeded its time limit")
-            elif grade.returncode or grade.output_limited:
-                result.update(error="Grading process failed or exceeded its output limit")
+                result.update(
+                    status="timeout",
+                    error=f"Grading exceeded its time limit ({config.grade_timeout:g} s; --grade-timeout)",
+                )
+            elif grade.output_limited:
+                result.update(
+                    error=(
+                        "Grading exceeded its log output limit "
+                        f"({config.max_log_bytes:,} bytes per stdout/stderr stream; "
+                        "--max-log-bytes; not a model token limit)"
+                    )
+                )
+            elif grade.returncode:
+                result.update(
+                    error=f"Grading process exited with code {grade.returncode}; inspect grader logs"
+                )
             else:
                 grading = validate_grade(json.loads(grade.stdout))
                 result["grading"] = grading
@@ -633,13 +646,29 @@ def run_attempt(
             # Failed agent execution never earns successful-attempt credit, even
             # if a partial patch happens to pass. Keep its correctness diagnostic.
             if agent.timed_out:
-                result.update(status="timeout", error="Agent exceeded its time limit", score=0)
+                result.update(
+                    status="timeout",
+                    error=f"Agent exceeded its time limit ({config.timeout:g} s; --timeout)",
+                    score=0,
+                )
             elif agent.output_limited:
-                result.update(status="error", error="Agent exceeded its output limit", score=0)
+                result.update(
+                    status="error",
+                    error=(
+                        "Agent exceeded its log output limit "
+                        f"({config.max_log_bytes:,} bytes per stdout/stderr stream; "
+                        "--max-log-bytes; not a model token limit)"
+                    ),
+                    score=0,
+                )
             elif agent.returncode or observed_error:
                 result.update(
                     status="error",
-                    error=observed_error or f"Agent exited {agent.returncode}",
+                    error=observed_error
+                    or (
+                        f"Agent exited with code {agent.returncode} without an explicit harness "
+                        "error; inspect agent stdout/stderr"
+                    ),
                     score=0,
                 )
     except KeyboardInterrupt:
@@ -650,6 +679,7 @@ def run_attempt(
         result.update(status="error", score=0, error=str(exc))
     finally:
         result.update(duration_seconds=time.monotonic() - started, finished_at=utc_now())
+        result["outcome_reason"] = describe_outcome(result)
     return _redact(result, secret)
 
 
@@ -775,6 +805,11 @@ def run_benchmark(config: RunConfig) -> tuple[dict, Path]:
                 f"  {result['status']}: {result['score']:.2f}/100 in {result['duration_seconds']:.1f}s",
                 flush=True,
             )
+            if result["status"] != "success":
+                print(
+                    f"  Outcome: {result.get('outcome_reason') or describe_outcome(result)}",
+                    flush=True,
+                )
             termination = result.get("termination") or {}
             if any(
                 termination.get(field) is not None

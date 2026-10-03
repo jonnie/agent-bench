@@ -154,6 +154,22 @@ Attempt statuses are:
   infrastructure failure.
 - `interrupted`: the started attempt was interrupted by the user.
 
+New attempts include optional `outcome_reason`, a human-readable explanation of the
+result. Correctness failures name failing hidden checks and summarize the final
+assertion/exception; execution failures include the execution error and observed
+tool activity/stop reason when available. A retained grade after execution failure
+is explicitly diagnostic and cannot earn successful-attempt credit. This string is
+not a stable machine-readable category: use `status`, `grading.cases`, and numeric
+metrics for analysis.
+
+`error` remains an execution-error field. Its absence on a `failed` attempt means
+the harness completed normally but the submitted code did not pass all checks;
+it does **not** mean the failure cause is unknown. HTML separates **Outcome** from
+**Execution error**, and derives an explanation from existing grading data when
+rendering historical reports without `outcome_reason`. Rendering does not change
+recorded JSON or scores. This is an additive schema-version-1 field, not a schema
+version bump.
+
 `grading`, when available, records `tests_total`, `tests_passed`, `tests_failed`,
 `tests_errors`, `score`, `success`, and `cases`. Each case has `name`, `status`
 (`passed`, `failed`, or `error`), and `detail`. Skips and expected failures receive

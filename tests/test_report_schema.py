@@ -238,6 +238,15 @@ class ReportSchemaTests(unittest.TestCase):
             expected = ["default", "core"] if item["task_id"] in list(TASKS)[:3] else ["default"]
             self.assertEqual(item["task_sets"], expected)
 
+    def test_outcome_reason_is_optional_but_constrained_when_present(self):
+        self.assertTrue(self.report["results"][0]["outcome_reason"])
+        historical = copy.deepcopy(self.report)
+        historical["results"][0].pop("outcome_reason")
+        self.assertValid(historical)
+        for value in (None, "", 123, [], {}):
+            with self.subTest(value=value):
+                self.assertInvalidAt(["results", 0, "outcome_reason"], value)
+
     def test_legacy_version_one_without_additive_task_set_and_termination_fields(self):
         # No portable historical results fixture is shipped. This deliberately
         # tests compatibility shape, not a claim of historical live inference.
@@ -251,6 +260,7 @@ class ReportSchemaTests(unittest.TestCase):
         for item in [*report["schedule"], *report["results"]]:
             item.pop("task_sets")
         report["results"][0].pop("termination")
+        report["results"][0].pop("outcome_reason")
         self.assertValid(report)
 
     def test_attempt_correctness_failures_and_grader_failures(self):

@@ -144,6 +144,109 @@ def _pre(value: Any) -> str:
     return f"<pre>{_text(value)}</pre>"
 
 
+def _case_reason(case: dict) -> str:
+    name = case.get("name") or "Unnamed hidden check"
+    detail = case.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        return str(name)
+    lines = detail.strip().split("\n")
+    # Keep the final exception, including chained tracebacks, rather than the
+    # trailing diff lines of a multiline unittest assertion. Full traces remain
+    # in grading.cases; this is only a short outcome explanation.
+    exception = next(
+        (
+            line.strip()
+            for line in reversed(lines)
+            if line
+            and not line[0].isspace()
+            and line.split(":", 1)[0]
+            .rsplit(".", 1)[-1]
+            .endswith(("Error", "Exception", "Exit", "Interrupt"))
+        ),
+        lines[-1].strip(),
+    )
+    return f"{name}: {exception[:400]}"
+
+
+def describe_outcome(result: dict) -> str:
+    """Explain execution and grading separately without changing measured data.
+
+    Also used by the renderer for historical reports lacking outcome_reason.
+    Missing counts stay unknown; tool activity alone is not proof of a loop.
+    """
+    status = result.get("status")
+    status = status if isinstance(status, str) else ""
+    grading = result.get("grading")
+    grading = grading if isinstance(grading, dict) else {}
+    passed, total = grading.get("tests_passed"), grading.get("tests_total")
+    counts_known = type(passed) is int and type(total) is int and total > 0 and 0 <= passed <= total
+    counts = f"{passed}/{total} hidden acceptance checks passed" if counts_known else None
+    if status == "success":
+        return f"Completed successfully; {counts}." if counts else "Completed successfully."
+    if status == "failed":
+        explanation = f"Correctness failure: {counts}." if counts else "Correctness failure."
+        cases = grading.get("cases")
+        failures = (
+            [
+                case
+                for case in cases
+                if isinstance(case, dict) and case.get("status") in ("failed", "error")
+            ]
+            if isinstance(cases, list)
+            else []
+        )
+        if failures:
+            explanation += " Failed checks: " + "; ".join(
+                _case_reason(case) for case in failures[:3]
+            )
+            if len(failures) > 3:
+                explanation += f"; and {len(failures) - 3} more (see grading checks)."
+        elif not grading:
+            explanation += " No grading details were recorded; the cause cannot be determined."
+        else:
+            explanation += " See grading data for details."
+        return explanation
+    error = result.get("error")
+    explanation = (
+        error.strip()
+        if isinstance(error, str) and error.strip()
+        else {
+            "timeout": "Execution timed out; no error detail was recorded.",
+            "error": "Execution failed; no error detail was recorded. Inspect agent/grader logs.",
+            "interrupted": "Attempt interrupted; no error detail was recorded.",
+        }.get(status, "No outcome details were recorded.")
+    )
+    if explanation and explanation[-1] not in ".!?":
+        explanation += "."
+    usage = result.get("usage")
+    calls = usage.get("tool_calls") if isinstance(usage, dict) else None
+    if type(calls) is int and calls >= 0:
+        explanation += f" Observed tool calls: {calls}."
+    termination = result.get("termination")
+    reason = termination.get("reason") if isinstance(termination, dict) else None
+    if isinstance(reason, str) and reason:
+        explanation += f" Last completed response stop reason: {reason}."
+    if counts:
+        explanation += f" Retained patch (diagnostic only): {counts}."
+        grade_score = _number(grading.get("score"))
+        if grade_score is not None:
+            explanation += f" Diagnostic grading score: {grade_score:g}/100."
+        explanation += (
+            " This cannot earn successful-attempt credit because execution did not complete "
+            "successfully; the attempt score remains 0."
+        )
+        cases = grading.get("cases")
+        if isinstance(cases, list):
+            failures = [
+                case
+                for case in cases
+                if isinstance(case, dict) and case.get("status") in ("failed", "error")
+            ]
+            if failures:
+                explanation += " First failing check: " + _case_reason(failures[0])
+    return explanation
+
+
 def _usage(metrics: dict) -> str:
     totals = dict(metrics.get("tokens") or {})
     for field in ("tool_calls", "estimated_cost_usd"):
@@ -390,8 +493,17 @@ def _attempt(result: dict, manifest: list, parameters: dict) -> str:
         )
         + "<h3>Parameters</h3>"
         + _pairs(parameters)
-        + "<h3>Error</h3>"
-        + _pre(result.get("error"))
+        + "<h3>Outcome</h3>"
+        + _pre(result.get("outcome_reason") or describe_outcome(result))
+        + "<h3>Execution error</h3>"
+        + _pre(
+            result.get("error")
+            or (
+                "None — harness execution completed normally."
+                if status in {"success", "failed"}
+                else "No execution error detail was recorded; see the outcome and logs."
+            )
+        )
         + checks
         + "<details><summary>Full grading data</summary>"
         + _pre(result.get("grading"))

@@ -46,6 +46,8 @@ Open `results.html` directly in a browser. It works offline with no HTTP server,
 
 See the [sanitized measured example](examples/README.md) for a complete 45-attempt report. It retains failures, but intentionally omits private transcripts/endpoints and does not establish the exact model weights or server deployment. Download/open its HTML locally; GitHub's file viewer does not render it as a website.
 
+Attempt details separate **Outcome** from **Execution error**. A `failed` attempt with no execution error means the generated code failed hidden checks; the outcome names the failing checks and summarizes their assertions. Timeouts can retain a passing diagnostic grade, but still receive an attempt score of zero because the agent did not finish. Historical reports gain these explanations when re-rendered, without changing their recorded measurements.
+
 The JSON is the source of truth for website tables/charts and supporting article data. [Schema version 1](docs/REPORT_FORMAT.md) is documented and bundled with the package. The CLI report renderer checks the envelope, not the full schema; full schema validation is a development/publication check. Do not publish raw run transcripts without review or let an LLM invent numerical results.
 
 ### Set up llama.cpp on the other machine

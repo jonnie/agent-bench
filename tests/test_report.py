@@ -115,6 +115,112 @@ def task_sets():
     ]
 
 
+class OutcomeTests(unittest.TestCase):
+    def test_failed_grade_explains_counts_case_and_short_assertion_detail(self):
+        detail = (
+            "Traceback (most recent call last):\n"
+            + '  File "/grader/hidden_tests.py", line 42, in test_parser\n' * 30
+            + "AssertionError: expected a quoted field, got two fields\n"
+        )
+        result = attempt(
+            status="failed",
+            score=50,
+            grading={
+                "tests_total": 2,
+                "tests_passed": 1,
+                "tests_failed": 1,
+                "tests_errors": 0,
+                "score": 50,
+                "success": False,
+                "cases": [
+                    {"name": "hidden.basic", "status": "passed", "detail": ""},
+                    {"name": "hidden.quoted_field", "status": "failed", "detail": detail},
+                ],
+            },
+        )
+        result.pop("error")
+        original = deepcopy(result)
+        reason = report_module.describe_outcome(result)
+        self.assertIsInstance(reason, str)
+        self.assertRegex(reason, r"\b1\s*(?:/|of|out of)\s*2\b")
+        self.assertIn("hidden.quoted_field", reason)
+        self.assertIn("AssertionError", reason)
+        self.assertIn("expected a quoted field, got two fields", reason)
+        self.assertNotIn(detail, reason)
+        self.assertNotIn("n/a", reason.lower())
+        self.assertEqual(result, original)
+        self.assertNotIn("error", result)
+
+    def test_candidate_import_error_is_a_grading_failure_not_execution_error(self):
+        result = attempt(
+            status="failed",
+            score=0,
+            grading={
+                "tests_total": 1,
+                "tests_passed": 0,
+                "tests_failed": 0,
+                "tests_errors": 1,
+                "score": 0,
+                "success": False,
+                "cases": [
+                    {
+                        "name": "hidden.import_candidate",
+                        "status": "error",
+                        "detail": "ModuleNotFoundError: No module named 'candidate_dependency'",
+                    }
+                ],
+            },
+        )
+        result.pop("error")
+        reason = report_module.describe_outcome(result)
+        self.assertRegex(reason, r"\b0\s*(?:/|of|out of)\s*1\b")
+        self.assertIn("hidden.import_candidate", reason)
+        self.assertIn("ModuleNotFoundError", reason)
+        self.assertIn("candidate_dependency", reason)
+        self.assertNotIn("error", result)
+
+    def test_execution_outcomes_explain_observations_and_diagnostic_only_grade(self):
+        for status, error in (
+            ("timeout", "Agent exceeded its 600 second time limit"),
+            ("error", "Model endpoint unavailable"),
+            ("interrupted", "Attempt interrupted by user"),
+        ):
+            with self.subTest(status=status):
+                result = attempt(
+                    status=status,
+                    error=error,
+                    score=0,
+                    usage={"tool_calls": 3, "input_tokens": None, "output_tokens": None},
+                    termination={"reason": "toolUse"},
+                    grading={
+                        "tests_total": 1,
+                        "tests_passed": 1,
+                        "score": 100,
+                        "success": True,
+                        "cases": [{"name": "hidden.case", "status": "passed", "detail": ""}],
+                    },
+                )
+                original = deepcopy(result)
+                reason = report_module.describe_outcome(result)
+                self.assertIn(error, reason)
+                self.assertRegex(reason.lower(), r"tool[_ -]?calls?[^.;\n]*\b3\b")
+                self.assertIn("toolUse", reason)
+                self.assertIn("100", reason)
+                self.assertIn("diagnostic", reason.lower())
+                self.assertIn("credit", reason.lower())
+                self.assertRegex(reason.lower(), r"(?:no|not|cannot|doesn't|does not).*credit")
+                self.assertEqual(result, original)
+
+    def test_legacy_failure_without_grading_is_explicit(self):
+        result = attempt(status="failed", grading=None, score=80)
+        result.pop("error")
+        reason = report_module.describe_outcome(result)
+        self.assertIn("no grading", reason.lower())
+        self.assertIn("recorded", reason.lower())
+        self.assertNotIn("n/a", reason.lower())
+        self.assertNotIn("error", result)
+
+
 class SummarizeTests(unittest.TestCase):
     def test_task_sets_overlap_without_duplicating_overall_metrics(self):
         results = [
@@ -342,6 +448,127 @@ class SummarizeTests(unittest.TestCase):
 
 
 class HtmlTests(unittest.TestCase):
+    def test_normal_completion_has_outcome_and_no_na_execution_error(self):
+        for status, passed in (("success", 1), ("failed", 0)):
+            for error_present in (False, True):
+                with self.subTest(status=status, error_present=error_present):
+                    result = attempt(
+                        status=status,
+                        score=100 * passed,
+                        agent_exit_code=0,
+                        grading={
+                            "tests_total": 1,
+                            "tests_passed": passed,
+                            "success": bool(passed),
+                            "score": 100 * passed,
+                            "cases": [
+                                {
+                                    "name": "hidden.case",
+                                    "status": "passed" if passed else "failed",
+                                    "detail": "" if passed else "AssertionError: expected True",
+                                }
+                            ],
+                        },
+                    )
+                    if not error_present:
+                        result.pop("error")
+                    source = report([result])
+                    original = deepcopy(source)
+                    html = render_html(source)
+                    self.assertIn("<h3>Outcome</h3>", html)
+                    self.assertIn("<h3>Execution error</h3>", html)
+                    self.assertNotIn("<h3>Error</h3>", html)
+                    outcome = html.partition("<h3>Outcome</h3>")[2].partition("<h3>")[0]
+                    execution = html.partition("<h3>Execution error</h3>")[2].partition("<h3>")[0]
+                    self.assertRegex(
+                        "".join(Document(outcome).text),
+                        rf"\b{passed}\s*(?:/|of|out of)\s*1\b",
+                    )
+                    self.assertIn("None", execution)
+                    self.assertIn("harness execution completed normally", execution.lower())
+                    self.assertNotIn("n/a", execution.lower())
+                    self.assertEqual(json.loads(Document(html).pre_blocks[-1]), original)
+                    self.assertEqual(source, original)
+
+    def test_legacy_html_derives_reasons_without_mutating_full_json(self):
+        results = [
+            attempt(status="failed", grading=None, score=80),
+            attempt(
+                status="timeout",
+                score=0,
+                error="Agent exceeded its 600 second time limit",
+                grading=None,
+                usage={"tool_calls": 4},
+                termination={"reason": "toolUse"},
+            ),
+        ]
+        source = report(results)
+        original = deepcopy(source)
+        html = render_html(source)
+        self.assertEqual(html.count("<h3>Outcome</h3>"), 2)
+        outcome_blocks = [part.partition("<h3>")[0] for part in html.split("<h3>Outcome</h3>")[1:]]
+        failure_reason = "".join(Document(outcome_blocks[0]).text).lower()
+        timeout_reason = "".join(Document(outcome_blocks[1]).text)
+        self.assertIn("no grading", failure_reason)
+        self.assertIn("recorded", failure_reason)
+        self.assertNotIn("n/a", failure_reason)
+        self.assertIn(results[1]["error"], timeout_reason)
+        self.assertRegex(timeout_reason.lower(), r"tool[_ -]?calls?[^.;\n]*\b4\b")
+        self.assertIn("toolUse", timeout_reason)
+        self.assertEqual(json.loads(Document(html).pre_blocks[-1]), original)
+        self.assertEqual(source, original)
+        self.assertTrue(all("outcome_reason" not in result for result in results))
+
+    def test_stored_outcome_is_preferred_escaped_and_roundtrips(self):
+        payload = '</pre><script>alert("outcome")</script><img src=x onerror=alert(1)>&\'"'
+        source = report([attempt(status="failed", grading=None, outcome_reason=payload)])
+        original = deepcopy(source)
+        html = render_html(source)
+        self.assertIn("<h3>Outcome</h3>", html)
+        outcome = html.partition("<h3>Outcome</h3>")[2].partition("<h3>")[0]
+        self.assertIn(escape(payload, quote=True), outcome)
+        self.assertEqual("".join(Document(outcome).text).strip(), payload)
+        document = Document(html)
+        self.assertNotIn(payload, html)
+        self.assertNotIn("script", document.tags)
+        self.assertNotIn("img", document.tags)
+        self.assertFalse(any(name.startswith("on") for name, _ in document.attributes))
+        self.assertEqual(json.loads(document.pre_blocks[-1]), original)
+        self.assertEqual(source, original)
+
+    def test_derived_outcome_and_execution_error_escape_untrusted_strings(self):
+        payload = '</pre><script>alert("derived")</script>&\'"'
+        source = report(
+            [
+                attempt(
+                    status="error",
+                    error=payload,
+                    score=0,
+                    grading={
+                        "tests_total": 1,
+                        "tests_passed": 0,
+                        "score": 0,
+                        "success": False,
+                        "cases": [{"name": payload, "status": "error", "detail": payload}],
+                    },
+                    termination={"reason": payload},
+                    usage={"tool_calls": 2},
+                )
+            ]
+        )
+        original = deepcopy(source)
+        html = render_html(source)
+        for heading in ("Outcome", "Execution error"):
+            with self.subTest(heading=heading):
+                self.assertIn(f"<h3>{heading}</h3>", html)
+                section = html.partition(f"<h3>{heading}</h3>")[2].partition("<h3>")[0]
+                self.assertIn(escape(payload, quote=True), section)
+        document = Document(html)
+        self.assertNotIn(payload, html)
+        self.assertNotIn("script", document.tags)
+        self.assertEqual(json.loads(document.pre_blocks[-1]), original)
+        self.assertEqual(source, original)
+
     def test_task_set_by_harness_comparison_keeps_existing_tables(self):
         source = report(
             [
@@ -688,9 +915,13 @@ class HtmlTests(unittest.TestCase):
     def test_null_task_metadata_is_not_rendered_as_none(self):
         source = report([attempt(harness=None, task_id=None, task_title=None)])
         source["task_manifest"] = []
-        document = Document(render_html(source))
+        html = render_html(source)
+        # An explicit "None" execution-error indicator is not missing metadata.
+        before_outcome = html.partition("<h3>Outcome</h3>")[0]
+        document = Document(before_outcome)
         self.assertNotIn("None", "".join(document.text))
         self.assertIn("n/a", "".join(document.text))
+        self.assertNotIn("<dt>Task ID</dt><dd>None</dd>", html)
 
     def test_unknown_is_na_but_known_zero_remains_visible(self):
         source = report(
