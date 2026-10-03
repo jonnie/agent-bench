@@ -32,6 +32,16 @@ Task-set additions are **optional** throughout version 1: `parameters.task_sets`
 diagnostic and summary coverage/spread fields are also not required. Historical
 producer-shaped schema-1 reports without these additions remain valid; absence
 must not be filled in by guessing membership or observations from today's registry.
+
+Explicit unlimited agent limits are another version-1 extension:
+`parameters.timeout` accepts a positive number or `null`, and
+`parameters.max_log_bytes` accepts a positive integer or `null`. Here `null`
+means explicitly **Unlimited**, not an unknown measurement; no other configured
+limit gains nullable/unlimited semantics. New reports still use `schema_version: 1`.
+Older validators may need the **latest bundled schema** to validate unlimited
+runs. Finite parameters and historical measured data remain unchanged; do not
+rewrite old evidence to add unlimited settings.
+
 The renderer accepts some more loosely shaped dictionaries for presentation;
 that does not make every such dictionary a valid producer report.
 
@@ -203,8 +213,15 @@ is reportable adapter configuration; extra effective request controls can be add
   the attempt duration.
 - `timeout`, `grade_timeout`, and `build_timeout` are seconds; `cpus` is a Docker
   CPU limit, `memory` is a Docker size string, `pids_limit` counts processes, and
-  log/source limits are bytes. Docker limits constrain client containers, not
-  remote GPU/RAM or total model tokens.
+  log/source limits are bytes. The default agent `timeout` is 600 seconds and
+  `max_log_bytes` is 2,000,000 bytes per stdout/stderr stream. A positive finite
+  value preserves the cap; `null` for either of these two parameters independently
+  disables it. HTML parameter lists display **Unlimited** for those nulls only,
+  while embedded/full JSON retains `null` without mutating the record. Missing
+  parameters do not imply unlimited; unknown metrics still display `n/a`.
+  Grading/build/doctor timeouts and CPU/RAM/PID/source limits remain finite.
+  Docker limits constrain client containers, not remote GPU/RAM or total model
+  tokens, host log storage, or host report-rendering memory.
 - `context_window` and `max_tokens` are token counts. `max_tokens` is a
   per-response setting, not a total attempt budget. The scheduling `seed`
   shuffles attempt order; it does not make server sampling deterministic.
@@ -239,6 +256,36 @@ is reportable adapter configuration; extra effective request controls can be add
   reasoning/output accounting can overlap. A `length` reason adds a warning about
   potentially incomplete output, without identifying which server/response limit
   caused it, triggering a retry, or changing correctness/status.
+
+### Unlimited configuration and operational limits
+
+The case-insensitive CLI keyword `unlimited` maps to `RunConfig` `None` and then
+JSON `null` only for `run --timeout` and `run --max-log-bytes`. JSON config can
+supply those nulls directly. Omitted options retain finite defaults; explicit CLI
+flags override JSON settings in either direction. NaN, infinity, zero, negatives,
+and booleans are invalid limits; `max_log_bytes` and `max_tokens` require positive
+finite integers. `max_tokens` remains bounded by the configured context window.
+
+A practical exploratory run retains finite wall time and unlimited logs:
+
+```sh
+agent-bench run --model qwen-coder --timeout 1800 --max-log-bytes unlimited --no-build
+```
+
+For fully unlimited opt-in exploration, a config can contain:
+
+```json
+{"model": "qwen-coder", "timeout": null, "max_log_bytes": null, "build": false}
+```
+
+Disabling both limits can run indefinitely, fill host temporary disk, produce
+huge JSON/HTML reports, and exhaust host RAM during rendering. Docker memory
+caps do not bound host logs. Ctrl+C invokes normal interruption cleanup and
+removes the active container; hard kills cannot guarantee cleanup. Native tool,
+server, and harness errors and context-window capacity still constrain execution:
+unlimited does not guarantee completion. Fully unlimited exploration is not a
+replacement for a fair bounded benchmark. Correctness-only scoring is unchanged;
+time and tokens remain separate measurements, not efficiency weights.
 
 ## Summaries and null denominators
 

@@ -140,6 +140,15 @@ def _pairs(values: dict) -> str:
     )
 
 
+def _parameter_pairs(parameters: dict) -> str:
+    return _pairs(
+        {
+            key: "Unlimited" if value is None and key in {"timeout", "max_log_bytes"} else value
+            for key, value in parameters.items()
+        }
+    )
+
+
 def _pre(value: Any) -> str:
     return f"<pre>{_text(value)}</pre>"
 
@@ -492,7 +501,7 @@ def _attempt(result: dict, manifest: list, parameters: dict) -> str:
             }
         )
         + "<h3>Parameters</h3>"
-        + _pairs(parameters)
+        + _parameter_pairs(parameters)
         + "<h3>Outcome</h3>"
         + _pre(result.get("outcome_reason") or describe_outcome(result))
         + "<h3>Execution error</h3>"
@@ -660,7 +669,7 @@ def render_html(report: dict) -> str:
         + _score_tables(results, manifest)
         + "</section>"
         "<section><h2>Run configuration</h2>"
-        "<details><summary>Parameters</summary>" + _pairs(parameters) + "</details>"
+        "<details><summary>Parameters</summary>" + _parameter_pairs(parameters) + "</details>"
         "<details><summary>Environment</summary>" + _pre(report.get("environment")) + "</details>"
         "<details><summary>Task manifest</summary>"
         + _pre(report.get("task_manifest"))

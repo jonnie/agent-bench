@@ -92,7 +92,7 @@ Public tests and a precise README contract are visible to the agent. Hidden acce
 - **Correctness score (0–100):** percentage of hidden unittest methods passed. Parameterized subtests count as a single method; one failing subtest fails that method. Skips and expected failures receive no credit. Each selected task has equal weight in the harness's mean score, since repeat counts are uniform.
 - **Success rate:** attempts passing every hidden check **and** completing harness execution successfully, divided by attempted cases. An agent timeout/error scores zero even if a partial patch passes; its grading remains as diagnostic evidence.
 - **Completion rate:** attempts finishing as success or ordinary correctness failure, excluding timeouts/infrastructure errors. A final `length` stop is shown as a token-limit warning in the CLI and reports, with observed final output/reasoning counts. It may reflect the response budget or server context capacity; it does not replace independent correctness grading or trigger a retry.
-- **Time:** host wall time including startup, grading and cleanup; separate agent and grading times are recorded. CPU/RAM limits constrain containers, not the remote GPU/model server.
+- **Time:** host wall time including startup, grading and cleanup; separate agent and grading times are recorded. Time and tokens are measured separately, never folded into the correctness score. CPU/RAM limits constrain containers, not the remote GPU/model server.
 - **Patch size:** changed production files, added/removed lines, and a unified diff. Smaller patches are not automatically better and are not rewarded in the correctness score.
 - **Performance work:** element-read counts and elapsed seconds from the performance task. Work-count assertions are less noisy than strict speed thresholds.
 - **Usage:** primary-stream input/output/cache tokens and tool calls when exposed by the harness. Missing/partial fields are `null`, never fabricated zeros. Summary usage totals display coverage.
@@ -133,10 +133,11 @@ agent-bench run \
 | `--tasks` | Individual task IDs; alone runs only those tasks, or adds to explicitly selected sets |
 | `--output` | `results`; always creates a unique child directory |
 | `--repeats` | `1`; fresh workspaces/sessions for every attempt |
-| `--timeout`, `--grade-timeout` | `600`, `60` seconds, independently bounded |
+| `--timeout` | `600` seconds of agent wall time; positive finite seconds or `unlimited` |
+| `--grade-timeout` | `60` seconds; always positive and finite |
 | `--build-timeout` | `900` seconds **per image** |
 | `--cpus`, `--memory`, `--pids-limit` | `2`, `4g`, `256`; same limits for agents and graders |
-| `--context-window`, `--max-tokens` | `32768`, `4096`; max tokens cannot exceed context |
+| `--context-window`, `--max-tokens` | `32768`, `4096`; positive finite integers; max tokens cannot exceed context |
 | `--api-profile` | `llama-cpp`; `openai-compatible` omits llama.cpp chat-template controls |
 | `--reasoning`, `--thinking` | Nonreasoning / `off`; llama-cpp profile maps off/non-off to template thinking disabled/enabled; native reasoning controls require model/endpoint support |
 | `--tool-profile` | `native`; `common` for four-tool comparison |
@@ -147,9 +148,61 @@ agent-bench run \
 | `--platform` | Native architecture; optional `linux/amd64` or `linux/arm64` |
 | `--no-build` | Skip image builds; pinned local images must exist |
 | `--harness-version NAME=VERSION` | Repeatable version override, recorded in reports |
-| `--max-log-bytes` | `2000000` per stdout/stderr stream; exceeding aborts attempt |
+| `--max-log-bytes` | `2000000` bytes per stdout/stderr stream; positive integer or `unlimited`; exceeding a finite cap aborts attempt |
 | `--max-source-bytes` | `2000000` submitted source bytes, up to 500 Python files |
 | `--config FILE` | JSON defaults; explicit CLI flags override them |
+
+### Explicit unlimited agent limits
+
+Only `run --timeout` and `run --max-log-bytes` accept the case-insensitive keyword `unlimited`. Each independently disables that framework limit and maps to `None` in `RunConfig`; omitting the option retains the finite defaults of **600 seconds** and **2,000,000 bytes per stdout/stderr stream**. NaN, infinity, zero, negative values, and booleans are invalid; use the explicit keyword rather than a numeric sentinel. Finite log caps must be integers.
+
+For longer exploratory attempts, generally retain a finite timeout and allow complete logs:
+
+```sh
+agent-bench run --model qwen-coder --base-url http://192.168.1.50:8080 \
+  --timeout 1800 --max-log-bytes unlimited --no-build
+
+# Independently disable agent wall time while retaining the default log cap:
+agent-bench run --model qwen-coder --timeout unlimited --no-build
+
+# Fully unlimited: opt-in exploration, not a replacement for a fair bounded benchmark.
+agent-bench run --model qwen-coder \
+  --timeout unlimited --max-log-bytes unlimited --no-build
+```
+
+JSON config uses explicit `null` for either unlimited limit (omitted keys still use defaults). For example, save this as `exploration.json`:
+
+```json
+{
+  "model": "qwen-coder",
+  "base_url": "http://192.168.1.50:8080/v1",
+  "timeout": null,
+  "max_log_bytes": null,
+  "build": false
+}
+```
+
+Explicit CLI flags override JSON values. Restore one or both finite caps:
+
+```sh
+agent-bench run --config exploration.json --timeout 1800
+agent-bench run --config exploration.json --timeout 600 --max-log-bytes 2000000
+```
+
+The reverse also works. With this finite config saved as `bounded.json`:
+
+```json
+{"model": "qwen-coder", "timeout": 1800, "max_log_bytes": 2000000, "build": false}
+```
+
+```sh
+agent-bench run --config bounded.json --max-log-bytes unlimited
+agent-bench run --config bounded.json --timeout unlimited --max-log-bytes unlimited
+```
+
+**Disabling both limits can run indefinitely, fill the host temporary disk, produce huge JSON/HTML files, and exhaust host RAM while rendering reports. Docker memory caps do not bound host logs or report rendering.** Ctrl+C uses normal interruption/cleanup and removes the active container; a hard kill is not normal cleanup. Unlimited does not guarantee completion: native tool, server, and harness errors and context-window capacity still constrain execution. Grading/build/doctor timeouts, CPU/RAM/PID limits, and submitted-source limits remain finite; `--max-tokens` remains a positive finite per-response budget.
+
+Reports still use `schema_version: 1`. `parameters.timeout: null` and `parameters.max_log_bytes: null` mean explicitly **Unlimited**, not unknown; HTML displays `Unlimited` only for these two parameter keys and preserves JSON nulls. Other unknown metrics still display `n/a`. Finite parameters and historical measurements are unchanged. Older validators may need the latest bundled [schema](docs/REPORT_FORMAT.md) to validate unlimited runs. Correctness-only scoring is unchanged; compare time/tokens separately and disclose limits when comparing experiments.
 
 ### Selecting tasks and task sets
 
@@ -213,7 +266,7 @@ Images use the same common base. The runner resolves **immutable local image IDs
 
 Harness versions and primary tool versions are pinned; Docker tag manifests, Debian packages, Python transitive dependencies, and some harness transitive dependencies can still change between builds. For exact cross-machine replay, retain/export the images from the report (e.g. `docker save`), use `--no-build`, and hold server weights, quantization, sampling, server build and hardware constant. Timings are not comparable across different host hardware or architectures; emulated `--platform` runs are particularly different.
 
-Agent containers have a fresh writable home, an ephemeral `/workspace`, and individual read-only harness config files. The caller's actual home, report directory, hidden tests, Docker socket, and model weights are never mounted. Containers run nonroot, with dropped capabilities, no-new-privileges and resource/time/output limits.
+Agent containers have a fresh writable home, an ephemeral `/workspace`, and individual read-only harness config files. The caller's actual home, report directory, hidden tests, Docker socket, and model weights are never mounted. Containers run nonroot, with dropped capabilities, no-new-privileges and finite resource limits; agent wall-time/output limits apply unless explicitly disabled as described above.
 
 On Linux with a nonroot caller, agents run with the caller's numeric UID/GID so newly created files, Python caches, and private directories remain readable/removable by the host. A separate private temporary home is mounted at `/home/bench`; config-file mount points are prepared inside it, and that home is removed after container shutdown. No actual host-home data is exposed. On macOS and root-host runs, agents retain the image's nonroot `bench` user (UID 1000); root callers are never mapped to container root. Graders always retain the image's nonroot user. Initial workspace modes remain permissive inside a private temporary directory, but permissions alone are not used to compensate for mismatched Linux ownership.
 

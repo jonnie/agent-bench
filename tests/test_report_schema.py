@@ -197,6 +197,86 @@ class ReportSchemaTests(unittest.TestCase):
         self.assertNotIn("schedule", initial)
         self.assertIsNone(initial["summary"]["success_rate"])
 
+    def test_nullable_agent_limits_validate_independently_without_schema_version_change(self):
+        for limits in (
+            {"timeout": None, "max_log_bytes": 2_000_000},
+            {"timeout": 600, "max_log_bytes": None},
+            {"timeout": None, "max_log_bytes": None},
+            {"timeout": 0.5, "max_log_bytes": 1},
+        ):
+            with self.subTest(limits=limits):
+                report = copy.deepcopy(self.report)
+                report["parameters"].update(limits)
+                self.assertEqual(report["schema_version"], 1)
+                self.assertValid(report)
+        legacy = copy.deepcopy(self.report)
+        legacy["parameters"].pop("timeout")
+        legacy["parameters"].pop("max_log_bytes")
+        self.assertValid(legacy)
+
+    def test_produced_unlimited_reports_and_every_snapshot_validate(self):
+        for limits in (
+            {"timeout": None},
+            {"max_log_bytes": None},
+            {"timeout": None, "max_log_bytes": None},
+        ):
+            with self.subTest(limits=limits):
+                report, snapshots = produce_report(**limits)
+                self.assertEqual(report["schema_version"], 1)
+                self.assertEqual(report["status"], "completed")
+                self.assertEqual(report["parameters"]["timeout"], limits.get("timeout", 600))
+                self.assertEqual(
+                    report["parameters"]["max_log_bytes"], limits.get("max_log_bytes", 2_000_000)
+                )
+                self.assertEqual(report["parameters"]["grade_timeout"], 60)
+                self.assertEqual(report["parameters"]["build_timeout"], 900)
+                self.assertEqual(report["parameters"]["max_source_bytes"], 2_000_000)
+                self.assertEqual(report["results"][0]["score"], 100)
+                self.assertEqual(report["results"][0]["usage"], self.report["results"][0]["usage"])
+                self.assertValid(report)
+                for snapshot in snapshots:
+                    self.assertEqual(snapshot["parameters"], report["parameters"])
+                    self.assertValid(snapshot)
+
+    def test_nullable_agent_limits_still_reject_invalid_values(self):
+        for field in ("timeout", "max_log_bytes"):
+            for value in (True, False, 0, -1, "unlimited", "600", [], {}):
+                with self.subTest(field=field, value=value):
+                    self.assertInvalidAt(("parameters", field), value)
+        self.assertInvalidAt(("parameters", "max_log_bytes"), 1.5)
+
+    def test_other_configured_limits_do_not_gain_nullable_semantics(self):
+        for field in (
+            "grade_timeout",
+            "build_timeout",
+            "cpus",
+            "memory",
+            "pids_limit",
+            "context_window",
+            "max_tokens",
+            "max_source_bytes",
+        ):
+            with self.subTest(field=field):
+                self.assertInvalidAt(("parameters", field), None)
+        for field in (
+            "grade_timeout",
+            "build_timeout",
+            "cpus",
+            "pids_limit",
+            "max_tokens",
+            "max_source_bytes",
+        ):
+            for value in (True, False, 0, -1, "unlimited"):
+                with self.subTest(field=field, value=value):
+                    self.assertInvalidAt(("parameters", field), value)
+        for path in (
+            ("model", "max_tokens"),
+            ("results", 0, "harness_configuration", "max_tokens"),
+        ):
+            for value in (None, True, 0, -1, 1.5, "unlimited"):
+                with self.subTest(path=path, value=value):
+                    self.assertInvalidAt(path, value)
+
     def test_startup_error_needs_no_docker_images_or_schedule(self):
         docker = fake_docker()
         docker.available.side_effect = RuntimeError("Docker is offline")

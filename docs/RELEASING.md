@@ -18,7 +18,7 @@ AGENT_BENCH_DOCKER_TESTS=1 .venv/bin/python -m unittest discover \
   -s tests -p test_docker_integration.py -v
 ```
 
-Docker checks use a local mock API, not the maintainer's LAN model. Installed development tools enable schema tests; ordinary runs deliberately skip the four opt-in Docker tests. Review any other skips.
+Docker checks use a local mock API, not the maintainer's LAN model. Installed development tools enable schema tests; ordinary runs deliberately skip the opt-in Docker tests. Review any other skips.
 
 ## 2. Validate the artifacts
 

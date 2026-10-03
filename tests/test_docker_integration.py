@@ -232,6 +232,28 @@ class MockModelHandler(BaseHTTPRequestHandler):
     "Set AGENT_BENCH_DOCKER_TESTS=1 to run prebuilt Docker integration tests",
 )
 class DockerOwnershipIntegrationTests(unittest.TestCase):
+    def test_unlimited_agent_limits_capture_complete_output_and_cleanup(self):
+        docker = runner.Docker(
+            runner.RunConfig(model="unused", build=False, timeout=None, max_log_bytes=None)
+        )
+        docker.available()
+        image = docker.image_metadata(runner.BASE_IMAGE)["id"]
+        result = docker.execute(
+            image=image,
+            mounts=[],
+            command=[
+                "python",
+                "-c",
+                "import sys,time; time.sleep(0.1); sys.stdout.write('x'*2100000); sys.stderr.write('y'*2100000)",
+            ],
+            timeout=None,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(result.timed_out)
+        self.assertFalse(result.output_limited)
+        self.assertEqual(result.stdout, "x" * 2_100_000)
+        self.assertEqual(result.stderr, "y" * 2_100_000)
+
     def test_linux_volume_cleanup_requires_matching_agent_uid(self):
         # Named volumes use the daemon's Linux filesystem, even on Docker Desktop.
         # No host bind mounts, harness images, or model endpoint are needed here.

@@ -11,6 +11,9 @@ User-visible changes are recorded here. Agent Bench is currently an experimental
 
 ### Added
 
+- Explicit, case-insensitive `run --timeout unlimited` and `--max-log-bytes unlimited`, independently supported via JSON config `null` and CLI overrides. Finite defaults remain 600 seconds and 2,000,000 bytes per stdout/stderr stream; other time/resource/source limits and per-response token limits remain finite.
+- Schema-version-1 reports allow `null` for these two parameters to mean explicitly Unlimited, not unknown. HTML labels them `Unlimited` without changing embedded JSON, finite parameters, historical measurements, or correctness-only scoring. Older validators may need the latest bundled schema to validate unlimited runs.
+- Unlimited-limit examples, safety guidance, and CLI/schema/report regression coverage. Fully unlimited exploration can run indefinitely, fill host temporary disk, produce huge JSON/HTML reports, and exhaust host rendering RAM despite Docker memory caps; a finite 1,800-second timeout with unlimited logs is generally recommended.
 - Weekly Dependabot version-update configuration for GitHub Actions and Python development dependencies; updates require review rather than automatic merging.
 - An importable `main` branch ruleset requiring CI and pull requests with no mandatory external approval, plus owner-level GitHub setup instructions. Committed configuration does not itself enable branch protection or security-alert settings.
 

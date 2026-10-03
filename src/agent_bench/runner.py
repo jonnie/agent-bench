@@ -49,7 +49,7 @@ class RunConfig:
     task_sets: list[str] | None = None
     output: str = "results"
     repeats: int = 1
-    timeout: float = 600
+    timeout: float | None = 600
     grade_timeout: float = 60
     build_timeout: float = 900
     cpus: float = 2
@@ -68,7 +68,7 @@ class RunConfig:
     network: str = "bridge"
     platform: str | None = None
     build: bool = True
-    max_log_bytes: int = 2_000_000
+    max_log_bytes: int | None = 2_000_000
     max_source_bytes: int = 2_000_000
     harness_versions: dict[str, str] = field(default_factory=lambda: dict(HARNESS_VERSIONS))
 
@@ -104,11 +104,16 @@ class RunConfig:
                 raise ValueError(f"Unknown harness: {harness}")
             image_tag(harness, self.harness_versions[harness])
         self.selected_tasks()
-        for name in ("repeats", "pids_limit", "max_log_bytes", "max_source_bytes"):
-            if type(getattr(self, name)) is not int or getattr(self, name) < 1:
+        for name in ("repeats", "pids_limit", "max_source_bytes", "max_log_bytes"):
+            value = getattr(self, name)
+            if name == "max_log_bytes" and value is None:
+                continue
+            if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         for name in ("timeout", "grade_timeout", "build_timeout", "cpus"):
             value = getattr(self, name)
+            if name == "timeout" and value is None:
+                continue
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a finite positive number")
         import re
@@ -175,11 +180,11 @@ class CommandResult:
     output_limited: bool = False
 
 
-def _read_log(stream, limit: int) -> str:
+def _read_log(stream, limit: int | None) -> str:
     stream.seek(0, os.SEEK_END)
     size = stream.tell()
     stream.seek(0)
-    if size <= limit:
+    if limit is None or size <= limit:
         return stream.read().decode("utf-8", errors="replace")
     first = stream.read(limit // 2)
     stream.seek(-limit // 2, os.SEEK_END)
@@ -193,13 +198,17 @@ def _read_log(stream, limit: int) -> str:
 
 def run_command(
     command: list[str],
-    timeout: float,
+    timeout: float | None,
     *,
     env: dict | None = None,
-    max_output: int = 2_000_000,
+    max_output: int | None = 2_000_000,
     live: bool = False,
 ) -> CommandResult:
-    """Bound subprocess time/output. No shell and no candidate-controlled commands."""
+    """Run without a shell; None disables either limit independently.
+
+    Logs spool to host temporary files. Unlimited capture can exhaust host disk
+    and requires loading the complete output into memory when the process ends.
+    """
     start = time.monotonic()
     timed_out = limited = False
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -208,12 +217,16 @@ def run_command(
         )
         try:
             while process.poll() is None:
-                if time.monotonic() - start >= timeout:
+                if timeout is not None and time.monotonic() - start >= timeout:
                     timed_out = True
                     break
-                if not live and (
-                    os.fstat(out.fileno()).st_size > max_output
-                    or os.fstat(err.fileno()).st_size > max_output
+                if (
+                    not live
+                    and max_output is not None
+                    and (
+                        os.fstat(out.fileno()).st_size > max_output
+                        or os.fstat(err.fileno()).st_size > max_output
+                    )
                 ):
                     limited = True
                     break
@@ -225,9 +238,13 @@ def run_command(
             if process.poll() is None:
                 process.kill()
                 process.wait()
-        if not live and (
-            os.fstat(out.fileno()).st_size > max_output
-            or os.fstat(err.fileno()).st_size > max_output
+        if (
+            not live
+            and max_output is not None
+            and (
+                os.fstat(out.fileno()).st_size > max_output
+                or os.fstat(err.fileno()).st_size > max_output
+            )
         ):
             limited = True
         stdout, stderr = _read_log(out, max_output), _read_log(err, max_output)
@@ -350,7 +367,7 @@ class Docker:
         image: str,
         mounts: list[tuple[Path, str, bool]],
         command: list[str],
-        timeout: float,
+        timeout: float | None,
         environment: dict | None = None,
         grade: bool = False,
     ) -> CommandResult:
@@ -523,6 +540,19 @@ def validate_grade(data: object) -> dict:
     return data
 
 
+def _output_limit_error(component: str, limit: int | None) -> str:
+    if limit is None:
+        return (
+            f"{component} execution reported an output limit despite --max-log-bytes unlimited; "
+            "inspect execution logs"
+        )
+    return (
+        f"{component} exceeded its log output limit "
+        f"({limit:,} bytes per stdout/stderr stream; "
+        "--max-log-bytes; not a model token limit)"
+    )
+
+
 def run_attempt(
     docker: Docker,
     config: RunConfig,
@@ -627,13 +657,7 @@ def run_attempt(
                     error=f"Grading exceeded its time limit ({config.grade_timeout:g} s; --grade-timeout)",
                 )
             elif grade.output_limited:
-                result.update(
-                    error=(
-                        "Grading exceeded its log output limit "
-                        f"({config.max_log_bytes:,} bytes per stdout/stderr stream; "
-                        "--max-log-bytes; not a model token limit)"
-                    )
-                )
+                result.update(error=_output_limit_error("Grading", config.max_log_bytes))
             elif grade.returncode:
                 result.update(
                     error=f"Grading process exited with code {grade.returncode}; inspect grader logs"
@@ -648,17 +672,17 @@ def run_attempt(
             if agent.timed_out:
                 result.update(
                     status="timeout",
-                    error=f"Agent exceeded its time limit ({config.timeout:g} s; --timeout)",
+                    error=(
+                        f"Agent exceeded its time limit ({config.timeout:g} s; --timeout)"
+                        if config.timeout is not None
+                        else "Agent execution reported a timeout despite --timeout unlimited; inspect execution logs"
+                    ),
                     score=0,
                 )
             elif agent.output_limited:
                 result.update(
                     status="error",
-                    error=(
-                        "Agent exceeded its log output limit "
-                        f"({config.max_log_bytes:,} bytes per stdout/stderr stream; "
-                        "--max-log-bytes; not a model token limit)"
-                    ),
+                    error=_output_limit_error("Agent", config.max_log_bytes),
                     score=0,
                 )
             elif agent.returncode or observed_error:
@@ -772,6 +796,18 @@ def run_benchmark(config: RunConfig) -> tuple[dict, Path]:
 
     persist()
     try:
+        if config.timeout is None:
+            print(
+                "WARNING: Agent timeout is unlimited; an attempt may never finish. "
+                "Use Ctrl+C for normal interruption and container cleanup.",
+                flush=True,
+            )
+        if config.max_log_bytes is None:
+            print(
+                "WARNING: Log output is unlimited; host temporary disk, report size, and "
+                "host RAM usage are not bounded by Docker resource limits.",
+                flush=True,
+            )
         report["environment"]["docker"] = docker.available()
         if config.build:
             docker.build_images()

@@ -948,6 +948,58 @@ class HtmlTests(unittest.TestCase):
         self.assertIn("input_tokens: <strong>0</strong>", zero_html)
         self.assertIn("(1/1 attempts)", zero_html)
 
+    def test_unlimited_parameters_render_only_limit_nulls_without_mutation(self):
+        for timeout, max_log_bytes in ((None, 2_000_000), (600, None), (None, None)):
+            with self.subTest(timeout=timeout, max_log_bytes=max_log_bytes):
+                source = report([attempt(score=None, duration_seconds=None, grading=None)])
+                source["parameters"].update(
+                    timeout=timeout,
+                    max_log_bytes=max_log_bytes,
+                    input_price=None,
+                    grade_timeout=None,
+                    build_timeout=None,
+                    max_source_bytes=None,
+                    max_tokens=None,
+                    unknown=None,
+                )
+                original = deepcopy(source)
+                html = render_html(source)
+                for key, value in (("timeout", timeout), ("max_log_bytes", max_log_bytes)):
+                    display = "Unlimited" if value is None else str(value)
+                    # Both run configuration and per-attempt parameters use this presentation.
+                    self.assertEqual(html.count(f"<dt>{key}</dt><dd>{display}</dd>"), 2)
+                for key in (
+                    "input_price",
+                    "grade_timeout",
+                    "build_timeout",
+                    "max_source_bytes",
+                    "max_tokens",
+                    "unknown",
+                ):
+                    self.assertEqual(html.count(f"<dt>{key}</dt><dd>n/a</dd>"), 2)
+                self.assertIn("Score n/a / 100", html)
+                self.assertIn('<span class="muted">n/a</span>', html)
+                self.assertEqual(json.loads(Document(html).pre_blocks[-1]), original)
+                self.assertEqual(source, original)
+
+    def test_finite_and_missing_historical_limits_keep_measurements(self):
+        for limits in ({}, {"timeout": 600, "max_log_bytes": 2_000_000}):
+            with self.subTest(limits=limits):
+                source = report(
+                    [attempt(score=75, duration_seconds=2.5, usage={"input_tokens": 7})]
+                )
+                source["parameters"].update(limits)
+                original = deepcopy(source)
+                html = render_html(source)
+                self.assertNotIn("Unlimited", "".join(Document(html).text))
+                for key, value in limits.items():
+                    self.assertEqual(html.count(f"<dt>{key}</dt><dd>{value}</dd>"), 2)
+                self.assertIn("Score 75.00 / 100", html)
+                self.assertIn("2.50 s", html)
+                self.assertIn("input_tokens: <strong>7</strong>", html)
+                self.assertEqual(json.loads(Document(html).pre_blocks[-1]), original)
+                self.assertEqual(source, original)
+
     def test_empty_and_partial_reports_render(self):
         for source in ({}, report([])):
             html = render_html(source)
@@ -993,6 +1045,48 @@ class WriteReportsTests(unittest.TestCase):
             self.assertIn("<caption>Task-set-by-harness comparison</caption>", html)
             self.assertEqual(json.loads(Document(html).pre_blocks[-1]), saved)
         self.assertEqual(source, original)
+
+    def test_unlimited_limits_roundtrip_json_and_html_without_changing_measurements(self):
+        for timeout, max_log_bytes in ((None, 2_000_000), (600, None), (None, None)):
+            with (
+                self.subTest(timeout=timeout, max_log_bytes=max_log_bytes),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                source = report(
+                    [attempt(score=75, duration_seconds=2.5, usage={"input_tokens": 7})]
+                )
+                source["parameters"].update(timeout=timeout, max_log_bytes=max_log_bytes)
+                original = deepcopy(source)
+                json_path, html_path = write_reports(source, Path(directory))
+                saved = json.loads(json_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["schema_version"], 1)
+                self.assertEqual(saved["parameters"], original["parameters"])
+                self.assertEqual(saved["results"], original["results"])
+                self.assertEqual(saved["summary"], summarize(original["results"]))
+                self.assertEqual(saved["summary"]["mean_score"], 75)
+                self.assertEqual(saved["summary"]["mean_duration_seconds"], 2.5)
+                self.assertEqual(saved["summary"]["tokens"], {"input_tokens": 7})
+                html = html_path.read_text(encoding="utf-8")
+                self.assertEqual(json.loads(Document(html).pre_blocks[-1]), saved)
+                for key, value in (("timeout", timeout), ("max_log_bytes", max_log_bytes)):
+                    display = "Unlimited" if value is None else str(value)
+                    expected = f"<dt>{key}</dt><dd>{display}</dd>"
+                    self.assertTrue(expected in html, f"Missing parameter display: {expected}")
+                self.assertEqual(source, original)
+
+    def test_nonfinite_limit_parameters_are_not_serialized_as_unlimited(self):
+        for key in ("timeout", "max_log_bytes"):
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with (
+                    self.subTest(key=key, value=value),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    source = report()
+                    source["parameters"][key] = value
+                    output = Path(directory) / "reports"
+                    with self.assertRaises(ValueError):
+                        write_reports(source, output)
+                    self.assertFalse(output.exists())
 
     def test_empty_and_direct_task_manifests_are_saved_without_observations(self):
         for manifest in (task_sets(), []):

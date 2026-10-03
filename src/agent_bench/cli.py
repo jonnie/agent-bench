@@ -38,6 +38,18 @@ def positive_float(value: str) -> float:
     return number
 
 
+def optional_timeout(value: str) -> float | None:
+    if value.strip().lower() == "unlimited":
+        return None
+    return positive_float(value)
+
+
+def optional_log_limit(value: str) -> int | None:
+    if value.strip().lower() == "unlimited":
+        return None
+    return positive_int(value)
+
+
 def nonnegative_float(value: str) -> float:
     try:
         number = float(value)
@@ -110,7 +122,10 @@ def parser() -> argparse.ArgumentParser:
         "--repeats", type=positive_int, help="Fresh attempts per task/harness (default: 1)"
     )
     run.add_argument(
-        "--timeout", type=positive_float, help="Agent wall time limit in seconds (default: 600)"
+        "--timeout",
+        type=optional_timeout,
+        metavar="SECONDS|unlimited",
+        help="Agent wall time limit in seconds, or unlimited (default: 600)",
     )
     run.add_argument(
         "--grade-timeout",
@@ -200,8 +215,9 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--max-log-bytes",
-        type=positive_int,
-        help="Per stdout/stderr limit; attempt aborted if exceeded (default: 2000000)",
+        type=optional_log_limit,
+        metavar="BYTES|unlimited",
+        help="Per stdout/stderr limit, or unlimited; exceeding a finite limit aborts (default: 2000000)",
     )
     run.add_argument(
         "--max-source-bytes",

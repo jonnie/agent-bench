@@ -86,7 +86,7 @@
         "task_sets": {"$ref": "#/$defs/nullableNames"},
         "output": {"type": "string"},
         "repeats": {"$ref": "#/$defs/positiveCount"},
-        "timeout": {"$ref": "#/$defs/positive"},
+        "timeout": {"anyOf": [{"$ref": "#/$defs/positive"}, {"type": "null"}], "description": "Agent wall time limit in seconds; null explicitly means Unlimited, not unknown."},
         "grade_timeout": {"$ref": "#/$defs/positive"},
         "build_timeout": {"$ref": "#/$defs/positive"},
         "cpus": {"$ref": "#/$defs/positive"},
@@ -105,7 +105,7 @@
         "network": {"type": "string"},
         "platform": {"type": ["string", "null"]},
         "build": {"type": "boolean"},
-        "max_log_bytes": {"$ref": "#/$defs/positiveCount"},
+        "max_log_bytes": {"anyOf": [{"$ref": "#/$defs/positiveCount"}, {"type": "null"}], "description": "Captured bytes per stdout/stderr stream; null explicitly means Unlimited, not unknown."},
         "max_source_bytes": {"$ref": "#/$defs/positiveCount"},
         "harness_versions": {"type": "object", "additionalProperties": {"type": "string"}}
       },

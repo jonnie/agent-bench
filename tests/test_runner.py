@@ -830,6 +830,141 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(result.output_limited)
         self.assertIn("truncated", result.stdout)
 
+    def test_unlimited_subprocess_output_is_not_truncated(self):
+        for timeout in (None, 5):
+            with self.subTest(timeout=timeout):
+                result = run_command(
+                    [
+                        "python3",
+                        "-c",
+                        "import sys; sys.stdout.write('x'*2100000); sys.stderr.write('y'*2100000)",
+                    ],
+                    timeout,
+                    max_output=None,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertFalse(result.timed_out)
+                self.assertFalse(result.output_limited)
+                self.assertEqual(result.stdout, "x" * 2_100_000)
+                self.assertEqual(result.stderr, "y" * 2_100_000)
+
+    def test_unlimited_logs_do_not_disable_finite_timeout(self):
+        result = run_command(
+            [
+                "python3",
+                "-u",
+                "-c",
+                "import sys,time; sys.stdout.write('x'*100000); sys.stdout.flush(); time.sleep(5)",
+            ],
+            0.5,
+            max_output=None,
+        )
+        self.assertTrue(result.timed_out)
+        self.assertFalse(result.output_limited)
+        self.assertEqual(result.stdout, "x" * 100_000)
+
+    def test_unlimited_timeout_does_not_disable_finite_output_limit(self):
+        result = run_command(
+            ["python3", "-u", "-c", "import time; print('x'*100000); time.sleep(5)"],
+            None,
+            max_output=100,
+        )
+        self.assertFalse(result.timed_out)
+        self.assertTrue(result.output_limited)
+        self.assertIn("[output truncated]", result.stdout)
+
+    def test_unlimited_subprocess_is_killed_on_interrupt(self):
+        with (
+            patch("agent_bench.runner.subprocess.Popen") as spawn,
+            patch("agent_bench.runner.time.sleep", side_effect=KeyboardInterrupt),
+        ):
+            process = spawn.return_value
+            process.poll.return_value = None
+            with self.assertRaises(KeyboardInterrupt):
+                run_command(["unused"], None, max_output=None)
+            process.kill.assert_called_once()
+            process.wait.assert_called_once()
+
+    def test_unlimited_attempt_preserves_grading_and_resource_limits(self):
+        for timeout, log_limit in ((None, 2_000_000), (600, None), (None, None)):
+            with self.subTest(timeout=timeout, log_limit=log_limit):
+                config = RunConfig(
+                    model="coder", timeout=timeout, max_log_bytes=log_limit
+                ).validate()
+                docker = FakeDocker()
+                result = run_attempt(docker, config, TASKS["bug-fix"], "pi", 1, "a", "b")
+                self.assertEqual(result["status"], "success")
+                self.assertEqual(result["score"], 100)
+                self.assertEqual(docker.calls[0]["timeout"], timeout)
+                self.assertEqual(docker.calls[1]["timeout"], 60)
+                limits = Docker(config).limits()
+                self.assertIn("--memory", limits)
+                self.assertIn("4g", limits)
+                self.assertIn("--cpus", limits)
+                self.assertIn("--pids-limit", limits)
+                self.assertIn("--cap-drop", limits)
+
+    def test_docker_forwards_unlimited_subprocess_limits(self):
+        config = RunConfig(model="coder", timeout=None, max_log_bytes=None).validate()
+        docker = Docker(config)
+        with (
+            patch(
+                "agent_bench.runner.run_command", return_value=CommandResult(0, "done", "", 0.1)
+            ) as command,
+            patch.object(docker, "remove") as remove,
+        ):
+            result = docker.execute(image="agent", mounts=[], command=["pi"], timeout=None)
+        self.assertEqual(result.stdout, "done")
+        self.assertIsNone(command.call_args.args[1])
+        self.assertIsNone(command.call_args.kwargs["max_output"])
+        remove.assert_called_once()
+
+    def test_unlimited_config_rejects_invalid_values_and_keeps_other_limits_finite(self):
+        for field in ("timeout", "max_log_bytes"):
+            for value in (0, -1, True, False, "unlimited", float("inf"), float("nan")):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    options: dict[str, Any] = {field: value}
+                    RunConfig(model="coder", **options).validate()
+        for field in ("grade_timeout", "build_timeout", "cpus", "max_source_bytes", "max_tokens"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                options: dict[str, Any] = {field: None}
+                RunConfig(model="coder", **options).validate()
+
+    def test_orchestration_warns_and_preserves_unlimited_configuration(self):
+        console = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch("agent_bench.runner.Docker") as docker,
+            patch("sys.stdout", console),
+        ):
+            docker.return_value.available.return_value = {}
+            docker.return_value.image_metadata.side_effect = lambda tag: {"id": "immutable:" + tag}
+            docker.return_value.execute.side_effect = lambda **kwargs: (
+                CommandResult(0, json.dumps(grade()), "", 0.1)
+                if kwargs.get("grade")
+                else CommandResult(0, "", "", 0.1)
+            )
+            report, output = run_benchmark(
+                RunConfig(
+                    model="coder",
+                    harnesses=["pi"],
+                    tasks=["bug-fix"],
+                    build=False,
+                    output=temp,
+                    timeout=None,
+                    max_log_bytes=None,
+                )
+            )
+            saved = json.loads((output / "results.json").read_text())
+            self.assertEqual(saved, report)
+            self.assertIsNone(saved["parameters"]["timeout"])
+            self.assertIsNone(saved["parameters"]["max_log_bytes"])
+            self.assertEqual(saved["results"][0]["score"], 100)
+            self.assertEqual(saved["parameters"]["grade_timeout"], 60)
+            self.assertIn("WARNING: Agent timeout is unlimited", console.getvalue())
+            self.assertIn("WARNING: Log output is unlimited", console.getvalue())
+            self.assertIn("<dd>Unlimited</dd>", (output / "results.html").read_text())
+
     def test_subprocess_bounds(self):
         result = run_command(["python3", "-c", "print('hello')"], 5)
         self.assertEqual(result.stdout.strip(), "hello")
